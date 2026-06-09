@@ -942,8 +942,9 @@ async function handleApi(req, res, url) {
 
       const emailToTaigaUserId = {};
       memberships.forEach(m => {
-        if (m.user && m.email) {
-          emailToTaigaUserId[m.email.toLowerCase()] = m.user;
+        const email = m.user_email || m.email;
+        if (m.user && email) {
+          emailToTaigaUserId[email.toLowerCase()] = m.user;
         }
       });
 
