@@ -26,13 +26,20 @@ function saveSession(nextSession) {
   localStorage.setItem("ot-support-session", JSON.stringify(nextSession));
 }
 
-async function loadStateFromDb() {
+function getSettingValueClient(key, defaultValue = "") {
+  if (!state.settings) return defaultValue;
+  const found = state.settings.find(s => s.key === key);
+  return found ? found.value : defaultValue;
+}
+
+async function loadStateFromDb(sync = false) {
   isBootstrapping = true;
   bootstrapError = "";
   render();
 
   try {
-    const response = await fetch("/api/state", { cache: "no-store" });
+    const url = sync ? "/api/state?sync=true" : "/api/state";
+    const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot load Google Sheets DB.");
     state = {
@@ -169,6 +176,8 @@ function ensureMonth(month) {
       .map((holiday) => holiday.date)
   );
 
+  let hasChanges = false;
+
   for (let day = 1; day <= daysInMonth; day += 1) {
     const date = new Date(year, monthIndex - 1, day);
     const key = dateKey(date);
@@ -201,6 +210,7 @@ function ensureMonth(month) {
       updatedAt: nowIso(),
       note: ""
     });
+    hasChanges = true;
   }
 
   state.holidaySettings
@@ -209,10 +219,13 @@ function ensureMonth(month) {
       const slotId = `slot_${holiday.date.replaceAll("-", "_")}`;
       const existing = state.scheduleSlots.find((slot) => slot.date === holiday.date);
       if (existing) {
-        existing.slotType = holiday.holidayType;
-        existing.title = holiday.name;
-        existing.note = holiday.note;
-        existing.updatedAt = nowIso();
+        if (existing.slotType !== holiday.holidayType || existing.title !== holiday.name || existing.note !== holiday.note) {
+          existing.slotType = holiday.holidayType;
+          existing.title = holiday.name;
+          existing.note = holiday.note;
+          existing.updatedAt = nowIso();
+          hasChanges = true;
+        }
       } else {
         state.scheduleSlots.push({
           slotId,
@@ -227,18 +240,27 @@ function ensureMonth(month) {
           updatedAt: holiday.updatedAt,
           note: holiday.note
         });
+        hasChanges = true;
       }
 
       const existingCapacity = state.capacities.find((capacity) => capacity.slotId === slotId);
       if (existingCapacity) {
-        Object.assign(existingCapacity, {
-          roleName: holiday.requiredRole,
-          requiredCount: holiday.requiredCount,
-          hoursPerPerson: holiday.hoursPerPerson,
-          manMonthFactor: holiday.manMonthFactor,
-          updatedAt: holiday.updatedAt,
-          note: holiday.note
-        });
+        if (
+          existingCapacity.roleName !== holiday.requiredRole ||
+          existingCapacity.requiredCount !== holiday.requiredCount ||
+          existingCapacity.hoursPerPerson !== holiday.hoursPerPerson ||
+          existingCapacity.manMonthFactor !== holiday.manMonthFactor
+        ) {
+          Object.assign(existingCapacity, {
+            roleName: holiday.requiredRole,
+            requiredCount: holiday.requiredCount,
+            hoursPerPerson: holiday.hoursPerPerson,
+            manMonthFactor: holiday.manMonthFactor,
+            updatedAt: holiday.updatedAt,
+            note: holiday.note
+          });
+          hasChanges = true;
+        }
       } else {
         state.capacities.push({
           capacityId: `cap_${holiday.date.replaceAll("-", "_")}_${holiday.requiredRole.toLowerCase().replaceAll("/", "_")}`,
@@ -251,10 +273,13 @@ function ensureMonth(month) {
           updatedAt: holiday.updatedAt,
           note: holiday.note
         });
+        hasChanges = true;
       }
     });
 
-  persist();
+  if (hasChanges) {
+    persist();
+  }
 }
 
 function getCapacity(slotId) {
@@ -470,34 +495,44 @@ function renderLogin(message = "") {
       <section class="login-panel">
         <div class="login-box">
           <h2>Sign in</h2>
-          <p class="muted">Local build dùng email kyanon.digital để xác định user. Google Workspace OAuth sẽ được nối ở bản deploy.</p>
+          <p class="muted">Đăng nhập bằng tài khoản Google Workspace hoặc Username của Taiga.</p>
           ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
           <form class="form" id="login-form">
             <div class="field">
-              <label for="email">Company email</label>
-              <input id="email" name="email" type="email" value="${ADMIN_EMAIL}" autocomplete="email" required />
+              <label for="email">Email or Username</label>
+              <input id="email" name="email" type="text" placeholder="name@kyanon.digital" required />
             </div>
-            <button class="btn primary" type="submit">Continue</button>
+            <div class="field">
+              <label for="password">Taiga Password</label>
+              <input id="password" name="password" type="password" required />
+            </div>
+            <button class="btn primary" type="submit">Login</button>
           </form>
         </div>
       </section>
     </div>
   `;
 
-  document.querySelector("#login-form").addEventListener("submit", (event) => {
+  document.querySelector("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const email = new FormData(event.currentTarget).get("email").trim().toLowerCase();
-    if (!email.endsWith(`@${COMPANY_DOMAIN}`)) {
-      renderLogin(`Only @${COMPANY_DOMAIN} accounts can log in.`);
-      return;
+    const formData = new FormData(event.currentTarget);
+    const email = formData.get("email").trim().toLowerCase();
+    const password = formData.get("password");
+
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: email, password })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "Login failed");
+      
+      saveSession({ email: data.user.email });
+      await loadStateFromDb();
+    } catch (err) {
+      renderLogin(err.message);
     }
-    const user = state.users.find((item) => item.email.toLowerCase() === email);
-    if (!user || user.status !== "ACTIVE") {
-      renderLogin("This email is not active in the users sheet.");
-      return;
-    }
-    saveSession({ email });
-    render();
   });
 }
 
@@ -510,18 +545,51 @@ function renderView() {
   return "";
 }
 
-function monthToolbar() {
+function renderActionToolbar() {
   return `
     <div class="toolbar">
-      <div class="toolbar-group">
-        <button class="btn" data-action="prev-month">Previous</button>
-        <input type="month" value="${selectedMonth}" data-action="month-input" />
-        <button class="btn" data-action="next-month">Next</button>
-      </div>
+      <div></div>
       <div class="toolbar-group">
         <button class="btn" data-action="refresh-db">Refresh DB</button>
         <button class="btn primary" data-action="export-preview">Export preview</button>
       </div>
+    </div>
+  `;
+}
+
+function renderMonthSelector() {
+  const [year, month] = selectedMonth.split("-").map(Number);
+  
+  let monthOptions = "";
+  for (let m = 1; m <= 12; m++) {
+    const monthVal = `${m}`.padStart(2, "0");
+    monthOptions += `<option value="${monthVal}" ${m === month ? "selected" : ""}>Tháng ${m}</option>`;
+  }
+  
+  let yearOptions = "";
+  const currentYear = new Date().getFullYear();
+  for (let y = currentYear - 2; y <= currentYear + 3; y++) {
+    yearOptions += `<option value="${y}" ${y === year ? "selected" : ""}>Năm ${y}</option>`;
+  }
+
+  return `
+    <div class="month-selector-container">
+      <button class="nav-btn" type="button" data-action="prev-month" title="Previous Month">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+      </button>
+      <div class="select-wrapper">
+        <select data-action="select-month">
+          ${monthOptions}
+        </select>
+      </div>
+      <div class="select-wrapper">
+        <select data-action="select-year">
+          ${yearOptions}
+        </select>
+      </div>
+      <button class="nav-btn" type="button" data-action="next-month" title="Next Month">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+      </button>
     </div>
   `;
 }
@@ -534,8 +602,11 @@ function renderDashboard() {
     return sum + getRegistrationHours(registration);
   }, 0);
 
+  const [year, month] = selectedMonth.split("-");
+  const displayLabel = `Tháng ${parseInt(month, 10)} - ${year}`;
+
   return `
-    ${monthToolbar()}
+    ${renderActionToolbar()}
     <div class="grid cols-4">
       ${metric("Support days", slots.length)}
       ${metric("Open slots", openSlots)}
@@ -544,9 +615,9 @@ function renderDashboard() {
     </div>
     <div class="split" style="margin-top:16px">
       <section class="panel">
-        <div class="panel-header">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
           <h2 class="panel-title">Calendar</h2>
-          <span class="muted">${selectedMonth}</span>
+          ${renderMonthSelector()}
         </div>
         <div class="panel-body">${renderCalendar(slots)}</div>
       </section>
@@ -582,13 +653,15 @@ function renderCalendar(slots) {
   start.setDate(first.getDate() - first.getDay());
   const cells = [];
 
+  const todayKey = dateKey(new Date());
   for (let i = 0; i < 42; i += 1) {
     const date = new Date(start);
     date.setDate(start.getDate() + i);
     const key = dateKey(date);
     const daySlots = slots.filter((slot) => slot.date === key);
+    const isToday = key === todayKey;
     cells.push(`
-      <div class="day ${date.getMonth() === month - 1 ? "" : "out"}">
+      <div class="day ${date.getMonth() === month - 1 ? "" : "out"} ${isToday ? "today" : ""}">
         <div class="day-number">${date.getDate()}</div>
         ${daySlots.map(renderCalendarSlot).join("")}
       </div>
@@ -824,10 +897,11 @@ function renderStats() {
     });
 
   return `
-    ${monthToolbar()}
+    ${renderActionToolbar()}
     <section class="panel">
-      <div class="panel-header">
+      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <h2 class="panel-title">Monthly member totals</h2>
+        ${renderMonthSelector()}
       </div>
       <div class="table-wrap">
         <table>
@@ -998,8 +1072,9 @@ function renderAdminSchedule() {
   const holidayRows = state.holidaySettings
     .filter((holiday) => holiday.date.startsWith(selectedMonth))
     .sort((a, b) => a.date.localeCompare(b.date));
+
   return `
-    ${monthToolbar()}
+    ${renderActionToolbar()}
     <div class="grid cols-2">
       <section class="panel">
         <div class="panel-header">
@@ -1051,9 +1126,9 @@ function renderAdminSchedule() {
         </div>
       </section>
       <section class="panel">
-        <div class="panel-header">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
           <h2 class="panel-title">Configured holiday/Tet days</h2>
-          <span class="muted">${selectedMonth}</span>
+          ${renderMonthSelector()}
         </div>
         <div class="panel-body">
           ${holidayRows.length ? `
@@ -1069,6 +1144,28 @@ function renderAdminSchedule() {
         </div>
       </section>
     </div>
+    
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <h2 class="panel-title">Google Chat Notifications</h2>
+      </div>
+      <div class="panel-body">
+        <form class="form" id="chat-settings-form">
+          <div class="field">
+            <label>Google Chat Webhook URL</label>
+            <input type="url" name="webhookUrl" placeholder="https://chat.googleapis.com/v1/spaces/..." value="${escapeHtml(getSettingValueClient('google_chat_webhook_url'))}" />
+          </div>
+          <div class="actions" style="margin-top: 12px;">
+            <button class="btn primary small" type="submit">Save Settings</button>
+            <button class="btn small" type="button" data-action="test-chat">Send Test Message</button>
+            <button class="btn small" type="button" data-action="trigger-reminders">Send Tomorrow's Reminders</button>
+          </div>
+        </form>
+        <div class="notice" style="margin-top: 14px; margin-bottom: 0;">
+          Cấu hình Webhook URL của Google Chat để gửi cảnh báo tự động khi đăng ký, hủy trực hoặc duyệt yêu cầu, và gửi nhắc lịch hàng ngày lúc 17:00.
+        </div>
+      </div>
+    </section>
   `;
 }
 
@@ -1080,37 +1177,59 @@ function bindShellEvents() {
     });
   });
 
-  document.querySelector("[data-action='logout']")?.addEventListener("click", () => {
+  document.querySelector("[data-action='logout']")?.addEventListener("click", async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch (err) {
+      console.error("Backend logout failed", err);
+    }
     localStorage.removeItem("ot-support-session");
     session = null;
     render();
   });
 
-  document.querySelector("[data-action='prev-month']")?.addEventListener("click", () => {
-    const date = parseLocalDate(`${selectedMonth}-01`);
-    date.setMonth(date.getMonth() - 1);
-    selectedMonth = monthKey(date);
-    render();
+  document.querySelectorAll("[data-action='prev-month']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const date = parseLocalDate(`${selectedMonth}-01`);
+      date.setMonth(date.getMonth() - 1);
+      selectedMonth = monthKey(date);
+      render();
+    });
   });
 
-  document.querySelector("[data-action='next-month']")?.addEventListener("click", () => {
-    const date = parseLocalDate(`${selectedMonth}-01`);
-    date.setMonth(date.getMonth() + 1);
-    selectedMonth = monthKey(date);
-    render();
+  document.querySelectorAll("[data-action='next-month']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const date = parseLocalDate(`${selectedMonth}-01`);
+      date.setMonth(date.getMonth() + 1);
+      selectedMonth = monthKey(date);
+      render();
+    });
   });
 
-  document.querySelector("[data-action='month-input']")?.addEventListener("change", (event) => {
-    selectedMonth = event.target.value;
-    render();
+  document.querySelectorAll("[data-action='select-month']").forEach((select) => {
+    select.addEventListener("change", (e) => {
+      const [year] = selectedMonth.split("-");
+      const monthVal = e.target.value;
+      selectedMonth = `${year}-${monthVal}`;
+      render();
+    });
+  });
+
+  document.querySelectorAll("[data-action='select-year']").forEach((select) => {
+    select.addEventListener("change", (e) => {
+      const [, month] = selectedMonth.split("-");
+      const yearVal = e.target.value;
+      selectedMonth = `${yearVal}-${month}`;
+      render();
+    });
   });
 
   document.querySelector("[data-action='refresh-db']")?.addEventListener("click", () => {
-    loadStateFromDb();
+    loadStateFromDb(true);
   });
 
   document.querySelector("[data-action='export-preview']")?.addEventListener("click", () => {
-    alert("Export preview: production build will fill the Excel template from Google Sheets DB for " + selectedMonth + ".");
+    window.location.href = `/api/export?month=${selectedMonth}`;
   });
 
   document.querySelectorAll("[data-action='focus-slot']").forEach((button) => {
@@ -1280,6 +1399,63 @@ function bindShellEvents() {
     audit(session.email, "HOLIDAY_DURATION_CREATE", "holiday_setting", `${data.startDate}_${data.endDate}`, "", JSON.stringify({ ...data, dates: createdDates }));
     persist();
     render();
+  });
+
+  document.querySelector("#chat-settings-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    try {
+      const response = await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "google_chat_webhook_url", value: data.webhookUrl.trim() })
+      });
+      if (response.ok) {
+        alert("Settings saved successfully.");
+        await loadStateFromDb();
+      } else {
+        alert("Failed to save settings.");
+      }
+    } catch (err) {
+      alert("Error saving settings: " + err.message);
+    }
+  });
+
+  document.querySelector("[data-action='test-chat']")?.addEventListener("click", async () => {
+    const btn = document.querySelector("[data-action='test-chat']");
+    btn.disabled = true;
+    try {
+      const response = await fetch("/api/chat/test", { method: "POST" });
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        alert("Test message sent successfully. Please check your Google Chat space!");
+      } else {
+        alert("Failed to send test message. Check that the webhook URL is correct.");
+      }
+    } catch (err) {
+      alert("Error sending test message: " + err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.querySelector("[data-action='trigger-reminders']")?.addEventListener("click", async () => {
+    const btn = document.querySelector("[data-action='trigger-reminders']");
+    btn.disabled = true;
+    try {
+      const response = await fetch("/api/chat/trigger-reminders", { method: "POST" });
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        alert(`Reminders triggered! Sent: ${data.sentCount} notifications, Open slots warned: ${data.openCount}.`);
+        await loadStateFromDb();
+      } else {
+        alert("Failed to trigger reminders.");
+      }
+    } catch (err) {
+      alert("Error triggering reminders: " + err.message);
+    } finally {
+      btn.disabled = false;
+    }
   });
 
 }
