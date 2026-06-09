@@ -8,7 +8,9 @@ loadEnvFile(".env.local");
 
 const port = Number(process.env.PORT || 4173);
 const root = join(process.cwd(), "public");
-const apiUrl = process.env.TAIGA_API_URL || "https://projects.kyanon.digital/api/v1";
+let apiUrl = process.env.TAIGA_API_URL || "https://projects.kyanon.digital/api/v1";
+if (apiUrl.endsWith("/")) apiUrl = apiUrl.slice(0, -1);
+if (apiUrl.endsWith("/api")) apiUrl = apiUrl + "/v1";
 const projectSlug = process.env.TAIGA_PROJECT_SLUG || "amaze-ot-log";
 let cachedAdminToken = process.env.TAIGA_ADMIN_TOKEN || null;
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkeyforotsupporttool2026";
