@@ -942,6 +942,14 @@ async function handleApi(req, res, url) {
           if (slot) {
             let taigaIssueId = slot.taigaIssueId;
             if (!taigaIssueId) {
+              const existingLocalSlot = localState.scheduleSlots.find(s => s.date === slot.date && s.taigaIssueId);
+              if (existingLocalSlot) {
+                taigaIssueId = existingLocalSlot.taigaIssueId;
+                slot.taigaIssueId = taigaIssueId;
+              }
+            }
+
+            if (!taigaIssueId) {
               // Create the issue on Taiga (e.g. for auto-generated weekend slots)
               const createdIssue = await taigaFetch("/issues", {
                 method: "POST",
