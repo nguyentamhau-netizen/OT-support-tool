@@ -405,7 +405,7 @@ textarea {
 }
 
 .slot-pill.full {
-  opacity: 0.72;
+  opacity: 1.0;
 }
 
 .slot-name {
@@ -417,6 +417,11 @@ textarea {
   color: var(--muted);
   font-size: 12px;
   margin-top: 2px;
+}
+
+.slot-meta.assigned {
+  color: var(--accent-strong);
+  font-weight: 750;
 }
 
 .table-wrap {

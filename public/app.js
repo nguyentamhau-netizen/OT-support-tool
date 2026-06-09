@@ -698,7 +698,7 @@ function renderCalendarSlot(slot) {
   return `
     <button class="slot-pill ${css}" data-action="focus-slot" data-slot="${slot.slotId}">
       <span class="slot-name">${escapeHtml(slot.title)}</span>
-      <span class="slot-meta">${escapeHtml(names || `${remainingSlots(slot)} open`)}</span>
+      <span class="slot-meta ${names ? 'assigned' : ''}">${escapeHtml(names || `${remainingSlots(slot)} open`)}</span>
     </button>
   `;
 }
