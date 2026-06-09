@@ -495,6 +495,17 @@ async function taigaFetch(path, options = {}, isRetry = false) {
   return response.json();
 }
 
+async function addTaigaComment(issueId, commentText) {
+  const issue = await taigaFetch(`/issues/${issueId}`);
+  await taigaFetch(`/issues/${issueId}`, {
+    method: "PATCH",
+    body: JSON.stringify({
+      version: issue.version,
+      comment: commentText
+    })
+  });
+}
+
 async function initTaigaConfig() {
   const token = await getAdminToken();
   if (!token) return;
@@ -1039,12 +1050,7 @@ async function handleApi(req, res, url) {
             
             // Add comment
             if (taigaIssueId) {
-              await taigaFetch(`/issues/${taigaIssueId}/upd`, {
-                method: "POST",
-                body: JSON.stringify({
-                  comment: `[REGISTRATION] Registered by ${reg.userEmail}`
-                })
-              });
+              await addTaigaComment(taigaIssueId, `[REGISTRATION] Registered by ${reg.userEmail}`);
             }
 
             // Send Google Chat Alert! (disabled to avoid spam)
@@ -1076,12 +1082,7 @@ async function handleApi(req, res, url) {
                 method: "PATCH",
                 body: JSON.stringify({
                   version: existingIssue.version,
-                  assigned_to: null
-                })
-              });
-              await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-                method: "POST",
-                body: JSON.stringify({
+                  assigned_to: null,
                   comment: `[REGISTRATION] Cancelled by ${session.email}`
                 })
               });
@@ -1137,12 +1138,7 @@ async function handleApi(req, res, url) {
           const slot = incomingState.scheduleSlots.find(s => s.date === reqObj.targetDate);
           if (slot && slot.taigaIssueId) {
             try {
-              await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-                method: "POST",
-                body: JSON.stringify({
-                  comment: `[UPDATE-REQUEST]\nHours: ${reqObj.requestedHours}\nReason: ${reqObj.reason}\nEvidence: ${reqObj.evidenceUrl || ""}\nStatus: PENDING`
-                })
-              });
+              await addTaigaComment(slot.taigaIssueId, `[UPDATE-REQUEST]\nHours: ${reqObj.requestedHours}\nReason: ${reqObj.reason}\nEvidence: ${reqObj.evidenceUrl || ""}\nStatus: PENDING`);
             } catch (err) {
               if (err.message.includes("404")) {
                 slot.taigaIssueId = "";
@@ -1184,19 +1180,9 @@ async function handleApi(req, res, url) {
                     }
                   })
                 });
-                await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-                  method: "POST",
-                  body: JSON.stringify({
-                    comment: `[UPDATE-APPROVED] Approved by ${session.username}`
-                  })
-                });
+                await addTaigaComment(slot.taigaIssueId, `[UPDATE-APPROVED] Approved by ${session.username}`);
               } else {
-                await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-                  method: "POST",
-                  body: JSON.stringify({
-                    comment: `[UPDATE-REJECTED] Rejected by ${session.username}`
-                  })
-                });
+                await addTaigaComment(slot.taigaIssueId, `[UPDATE-REJECTED] Rejected by ${session.username}`);
               }
             }
 
