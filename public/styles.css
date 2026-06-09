@@ -788,4 +788,53 @@ th {
   }
 }
 
+/* Toast Notifications styling */
+.toast {
+  position: fixed;
+  top: 24px;
+  right: 24px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 12px 20px;
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
+  border-left: 4px solid var(--accent);
+  z-index: 9999;
+  font-weight: 650;
+  font-size: 14px;
+  transform: translateX(120%);
+  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.35s ease;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.toast.show {
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.toast.success {
+  border-left-color: var(--accent);
+  background: var(--green-soft);
+  color: #116149;
+  border: 1px solid #b8dfd2;
+  border-left: 4px solid var(--accent);
+}
+
+.toast.error {
+  border-left-color: var(--red);
+  background: var(--red-soft);
+  color: var(--red);
+  border: 1px solid #f1b5af;
+  border-left: 4px solid var(--red);
+}
+
+.toast.info {
+  border-left-color: var(--blue);
+  background: var(--blue-soft);
+  color: #2459a9;
+  border: 1px solid #c9d8f5;
+  border-left: 4px solid var(--blue);
+}
+
 

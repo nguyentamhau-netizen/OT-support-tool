@@ -28,6 +28,24 @@ function saveSession(nextSession) {
   localStorage.setItem("ot-support-session", JSON.stringify(nextSession));
 }
 
+function showToast(message, type = "success") {
+  const toast = document.createElement("div");
+  toast.className = `toast ${type}`;
+  toast.innerText = message;
+  document.body.appendChild(toast);
+  
+  setTimeout(() => {
+    toast.classList.add("show");
+  }, 10);
+
+  setTimeout(() => {
+    toast.classList.remove("show");
+    setTimeout(() => {
+      toast.remove();
+    }, 300);
+  }, 3000);
+}
+
 function getSettingValueClient(key, defaultValue = "") {
   if (!state.settings) return defaultValue;
   const found = state.settings.find(s => s.key === key);
@@ -1268,18 +1286,24 @@ function bindShellEvents() {
       allowPast: isAdmin(),
       allowMonthlyOverride: isAdmin()
     });
-    modal = error
-      ? { type: "info", title: "Không thể đăng ký", message: error, primary: { label: "Close", action: "modal-close" } }
-      : { type: "info", title: "Đăng ký thành công", message: "Bạn đã đăng ký lịch trực thành công.", primary: { label: "Close", action: "modal-close" } };
+    if (error) {
+      modal = { type: "info", title: "Không thể đăng ký", message: error, primary: { label: "Close", action: "modal-close" } };
+    } else {
+      modal = null;
+      showToast("Đăng ký ca trực thành công!");
+    }
     render();
   });
 
   document.querySelector("[data-action='modal-confirm-cancel']")?.addEventListener("click", () => {
     if (!modal?.registrationId) return;
     const error = cancelRegistration(modal.registrationId);
-    modal = error
-      ? { type: "info", title: "Không thể hủy đăng ký", message: error, primary: { label: "Close", action: "modal-close" } }
-      : { type: "info", title: "Đã hủy đăng ký", message: "Đăng ký trực của bạn đã được hủy.", primary: { label: "Close", action: "modal-close" } };
+    if (error) {
+      modal = { type: "info", title: "Không thể hủy đăng ký", message: error, primary: { label: "Close", action: "modal-close" } };
+    } else {
+      modal = null;
+      showToast("Đã hủy đăng ký ca trực!");
+    }
     render();
   });
 
