@@ -10,7 +10,7 @@ const port = Number(process.env.PORT || 4173);
 const root = join(process.cwd(), "public");
 const apiUrl = process.env.TAIGA_API_URL || "https://projects.kyanon.digital/api/v1";
 const projectSlug = process.env.TAIGA_PROJECT_SLUG || "amaze-ot-log";
-const adminToken = process.env.TAIGA_ADMIN_TOKEN;
+let cachedAdminToken = process.env.TAIGA_ADMIN_TOKEN || null;
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkeyforotsupporttool2026";
 const DB_DIR = join(process.cwd(), "db_cache");
 
@@ -431,15 +431,61 @@ function dateKeyString(date) {
 }
 
 // Taiga API helpers
-async function taigaFetch(path, options = {}) {
+async function getAdminToken(forceRefresh = false) {
+  if (cachedAdminToken && !forceRefresh) {
+    return cachedAdminToken;
+  }
+
+  const username = process.env.TAIGA_USERNAME;
+  const password = process.env.TAIGA_PASSWORD;
+
+  if (!username || !password) {
+    return process.env.TAIGA_ADMIN_TOKEN || "";
+  }
+
+  try {
+    console.log("[TAIGA-AUTH] Requesting new token using credentials...");
+    const authRes = await fetch(`${apiUrl}/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "normal", username, password })
+    });
+
+    if (!authRes.ok) {
+      throw new Error(`Authentication failed: ${authRes.status} ${await authRes.text()}`);
+    }
+
+    const userData = await authRes.json();
+    if (userData.auth_token) {
+      cachedAdminToken = userData.auth_token;
+      console.log("[TAIGA-AUTH] New token acquired successfully.");
+      return cachedAdminToken;
+    } else {
+      throw new Error("No auth_token returned from Taiga auth endpoint.");
+    }
+  } catch (err) {
+    console.error("[TAIGA-AUTH] Failed to login to Taiga:", err.message);
+    return process.env.TAIGA_ADMIN_TOKEN || "";
+  }
+}
+
+async function taigaFetch(path, options = {}, isRetry = false) {
+  const token = await getAdminToken();
   const response = await fetch(`${apiUrl}${path}`, {
     ...options,
     headers: {
-      "Authorization": `Bearer ${adminToken}`,
+      "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
       ...(options.headers || {})
     }
   });
+
+  if (response.status === 401 && !isRetry) {
+    console.log("[TAIGA-AUTH] Received 401 from Taiga. Retrying with refreshed token...");
+    await getAdminToken(true);
+    return taigaFetch(path, options, true);
+  }
+
   if (!response.ok) {
     throw new Error(`Taiga API failed: ${response.status} ${await response.text()}`);
   }
@@ -448,23 +494,19 @@ async function taigaFetch(path, options = {}) {
 }
 
 async function initTaigaConfig() {
-  if (!adminToken) return;
+  const token = await getAdminToken();
+  if (!token) return;
   try {
-    const projectRes = await fetch(`${apiUrl}/projects/by_slug?slug=${projectSlug}`, {
-      headers: { "Authorization": `Bearer ${adminToken}` }
-    });
-    if (!projectRes.ok) throw new Error(`Fetch project failed: ${projectRes.status}`);
-    const project = await projectRes.json();
+    const project = await taigaFetch(`/projects/by_slug?slug=${projectSlug}`);
     projectId = project.id;
 
-    const attrRes = await fetch(`${apiUrl}/issue-custom-attributes?project=${projectId}`, {
-      headers: { "Authorization": `Bearer ${adminToken}` }
-    });
-    if (attrRes.ok) {
-      const attrs = await attrRes.json();
+    try {
+      const attrs = await taigaFetch(`/issue-custom-attributes?project=${projectId}`);
       attrs.forEach(attr => {
         customAttrMap[attr.name.toLowerCase()] = attr.id;
       });
+    } catch (err) {
+      console.warn("Could not load custom attributes:", err.message);
     }
   } catch (err) {
     console.error("Taiga connection error during startup:", err.message);

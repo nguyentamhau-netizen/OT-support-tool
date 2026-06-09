@@ -6,5 +6,8 @@
   "scripts": {
     "dev": "node server.mjs",
     "start": "node server.mjs"
+  },
+  "dependencies": {
+    "exceljs": "^4.4.0"
   }
 }
