@@ -1274,6 +1274,7 @@ async function handleApi(req, res, url) {
 
     sendJson(res, 404, { ok: false, error: "API route not found." });
   } catch (error) {
+    console.error(`[API-ERROR] Error handling ${req.method} ${url.pathname}:`, error);
     sendJson(res, 500, {
       ok: false,
       error: error.message
