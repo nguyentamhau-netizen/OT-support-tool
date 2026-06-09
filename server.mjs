@@ -923,6 +923,7 @@ async function handleApi(req, res, url) {
               await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
                 method: "PATCH",
                 body: JSON.stringify({
+                  version: createdIssue.version || 1,
                   attributes_values: {
                     [slotTypeAttrId]: slot.slotType,
                     [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
@@ -932,9 +933,11 @@ async function handleApi(req, res, url) {
               });
             } else {
               // Update assignee for existing issue
+              const existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
               await taigaFetch(`/issues/${taigaIssueId}`, {
                 method: "PATCH",
                 body: JSON.stringify({
+                  version: existingIssue.version,
                   assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
                 })
               });
@@ -961,9 +964,13 @@ async function handleApi(req, res, url) {
         if (oldReg && oldReg.status === "ACTIVE" && reg.status === "CANCELLED") {
           const slot = incomingState.scheduleSlots.find(s => s.slotId === reg.slotId);
           if (slot && slot.taigaIssueId) {
+            const existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
             await taigaFetch(`/issues/${slot.taigaIssueId}`, {
               method: "PATCH",
-              body: JSON.stringify({ assigned_to: null })
+              body: JSON.stringify({
+                version: existingIssue.version,
+                assigned_to: null
+              })
             });
             await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
               method: "POST",
@@ -999,6 +1006,7 @@ async function handleApi(req, res, url) {
           await taigaFetch(`/issues/custom-attributes-values/${createdIssue.id}`, {
             method: "PATCH",
             body: JSON.stringify({
+              version: createdIssue.version || 1,
               attributes_values: {
                 [slotTypeAttrId]: holiday.holidayType,
                 [hoursAttrId]: String(holiday.hoursPerPerson || 8),
@@ -1039,9 +1047,11 @@ async function handleApi(req, res, url) {
           if (slot && slot.taigaIssueId) {
             if (reqObj.status === "APPROVED") {
               const hoursAttrId = customAttrMap["hours"];
+              const customAttrs = await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`);
               await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`, {
                 method: "PATCH",
                 body: JSON.stringify({
+                  version: customAttrs.version,
                   attributes_values: {
                     [hoursAttrId]: String(reqObj.requestedHours)
                   }
