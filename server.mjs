@@ -1321,7 +1321,7 @@ createServer(async (req, res) => {
   }
 }).listen(port, async () => {
   console.log(`OT Support Tool local app: http://localhost:${port}`);
-  console.log(`Taiga integrated backend online. Project slug: ${projectSlug}`);
+  console.log(`Taiga integrated backend online. API URL: ${apiUrl}, Project slug: ${projectSlug}`);
   await initTaigaConfig();
   if (projectId) {
     try {
