@@ -933,23 +933,67 @@ async function handleApi(req, res, url) {
               });
             } else {
               // Update assignee for existing issue
-              const existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
-              await taigaFetch(`/issues/${taigaIssueId}`, {
-                method: "PATCH",
-                body: JSON.stringify({
-                  version: existingIssue.version,
-                  assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
-                })
-              });
+              let existingIssue = null;
+              try {
+                existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
+              } catch (err) {
+                if (err.message.includes("404")) {
+                  taigaIssueId = null;
+                  slot.taigaIssueId = "";
+                } else {
+                  throw err;
+                }
+              }
+
+              if (!taigaIssueId) {
+                const createdIssue = await taigaFetch("/issues", {
+                  method: "POST",
+                  body: JSON.stringify({
+                    project: projectId,
+                    subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
+                    description: slot.note || "Auto-generated weekend slot",
+                    assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
+                  })
+                });
+                taigaIssueId = createdIssue.id;
+                slot.taigaIssueId = taigaIssueId;
+
+                const slotTypeAttrId = customAttrMap["slot_type"];
+                const hoursAttrId = customAttrMap["hours"];
+                const factorAttrId = customAttrMap["man_month_factor"];
+                const capacity = incomingState.capacities.find(c => c.slotId === slot.slotId);
+
+                await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    version: createdIssue.version || 1,
+                    attributes_values: {
+                      [slotTypeAttrId]: slot.slotType,
+                      [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
+                      [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
+                    }
+                  })
+                });
+              } else {
+                await taigaFetch(`/issues/${taigaIssueId}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    version: existingIssue.version,
+                    assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
+                  })
+                });
+              }
             }
             
             // Add comment
-            await taigaFetch(`/issues/${taigaIssueId}/upd`, {
-              method: "POST",
-              body: JSON.stringify({
-                comment: `[REGISTRATION] Registered by ${reg.userEmail}`
-              })
-            });
+            if (taigaIssueId) {
+              await taigaFetch(`/issues/${taigaIssueId}/upd`, {
+                method: "POST",
+                body: JSON.stringify({
+                  comment: `[REGISTRATION] Registered by ${reg.userEmail}`
+                })
+              });
+            }
 
             // Send Google Chat Alert!
             const dateStr = formatDisplayDate(slot.date);
@@ -964,20 +1008,32 @@ async function handleApi(req, res, url) {
         if (oldReg && oldReg.status === "ACTIVE" && reg.status === "CANCELLED") {
           const slot = incomingState.scheduleSlots.find(s => s.slotId === reg.slotId);
           if (slot && slot.taigaIssueId) {
-            const existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
-            await taigaFetch(`/issues/${slot.taigaIssueId}`, {
-              method: "PATCH",
-              body: JSON.stringify({
-                version: existingIssue.version,
-                assigned_to: null
-              })
-            });
-            await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-              method: "POST",
-              body: JSON.stringify({
-                comment: `[REGISTRATION] Cancelled by ${session.email}`
-              })
-            });
+            let existingIssue = null;
+            try {
+              existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
+            } catch (err) {
+              if (err.message.includes("404")) {
+                slot.taigaIssueId = "";
+              } else {
+                throw err;
+              }
+            }
+
+            if (existingIssue) {
+              await taigaFetch(`/issues/${slot.taigaIssueId}`, {
+                method: "PATCH",
+                body: JSON.stringify({
+                  version: existingIssue.version,
+                  assigned_to: null
+                })
+              });
+              await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
+                method: "POST",
+                body: JSON.stringify({
+                  comment: `[REGISTRATION] Cancelled by ${session.email}`
+                })
+              });
+            }
 
             // Send Google Chat Alert!
             const dateStr = formatDisplayDate(slot.date);
@@ -1028,12 +1084,20 @@ async function handleApi(req, res, url) {
         if (!oldReq) {
           const slot = incomingState.scheduleSlots.find(s => s.date === reqObj.targetDate);
           if (slot && slot.taigaIssueId) {
-            await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-              method: "POST",
-              body: JSON.stringify({
-                comment: `[UPDATE-REQUEST]\nHours: ${reqObj.requestedHours}\nReason: ${reqObj.reason}\nEvidence: ${reqObj.evidenceUrl || ""}\nStatus: PENDING`
-              })
-            });
+            try {
+              await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
+                method: "POST",
+                body: JSON.stringify({
+                  comment: `[UPDATE-REQUEST]\nHours: ${reqObj.requestedHours}\nReason: ${reqObj.reason}\nEvidence: ${reqObj.evidenceUrl || ""}\nStatus: PENDING`
+                })
+              });
+            } catch (err) {
+              if (err.message.includes("404")) {
+                slot.taigaIssueId = "";
+              } else {
+                throw err;
+              }
+            }
 
             // Send Google Chat Alert!
             const dateStr = formatDisplayDate(reqObj.targetDate);
@@ -1045,31 +1109,43 @@ async function handleApi(req, res, url) {
         if (oldReq && oldReq.status === "PENDING" && reqObj.status !== "PENDING") {
           const slot = incomingState.scheduleSlots.find(s => s.date === reqObj.targetDate);
           if (slot && slot.taigaIssueId) {
-            if (reqObj.status === "APPROVED") {
-              const hoursAttrId = customAttrMap["hours"];
-              const customAttrs = await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`);
-              await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`, {
-                method: "PATCH",
-                body: JSON.stringify({
-                  version: customAttrs.version,
-                  attributes_values: {
-                    [hoursAttrId]: String(reqObj.requestedHours)
-                  }
-                })
-              });
-              await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-                method: "POST",
-                body: JSON.stringify({
-                  comment: `[UPDATE-APPROVED] Approved by ${session.username}`
-                })
-              });
-            } else {
-              await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
-                method: "POST",
-                body: JSON.stringify({
-                  comment: `[UPDATE-REJECTED] Rejected by ${session.username}`
-                })
-              });
+            let customAttrs = null;
+            try {
+              customAttrs = await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`);
+            } catch (err) {
+              if (err.message.includes("404")) {
+                slot.taigaIssueId = "";
+              } else {
+                throw err;
+              }
+            }
+
+            if (customAttrs) {
+              if (reqObj.status === "APPROVED") {
+                const hoursAttrId = customAttrMap["hours"];
+                await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`, {
+                  method: "PATCH",
+                  body: JSON.stringify({
+                    version: customAttrs.version,
+                    attributes_values: {
+                      [hoursAttrId]: String(reqObj.requestedHours)
+                    }
+                  })
+                });
+                await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    comment: `[UPDATE-APPROVED] Approved by ${session.username}`
+                  })
+                });
+              } else {
+                await taigaFetch(`/issues/${slot.taigaIssueId}/upd`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    comment: `[UPDATE-REJECTED] Rejected by ${session.username}`
+                  })
+                });
+              }
             }
 
             // Send Google Chat Alert!
