@@ -1037,9 +1037,9 @@ async function handleApi(req, res, url) {
               });
             }
 
-            // Send Google Chat Alert!
-            const dateStr = formatDisplayDate(slot.date);
-            sendGoogleChatMessage(`🔔 *Đăng ký trực mới*\n👤 Thành viên: *${reg.userEmail}*\n📅 Ngày trực: *${dateStr}*\n📝 Ca trực: *${slot.title}*`);
+            // Send Google Chat Alert! (disabled to avoid spam)
+            // const dateStr = formatDisplayDate(slot.date);
+            // sendGoogleChatMessage(`🔔 *Đăng ký trực mới*\n👤 Thành viên: *${reg.userEmail}*\n📅 Ngày trực: *${dateStr}*\n📝 Ca trực: *${slot.title}*`);
           }
         }
       }
@@ -1077,9 +1077,9 @@ async function handleApi(req, res, url) {
               });
             }
 
-            // Send Google Chat Alert!
-            const dateStr = formatDisplayDate(slot.date);
-            sendGoogleChatMessage(`⚠️ *Hủy đăng ký trực*\n👤 Thành viên: *${oldReg.userEmail}*\n📅 Ngày trực: *${dateStr}*\n📝 Ca trực: *${slot.title}*`);
+            // Send Google Chat Alert! (disabled to avoid spam)
+            // const dateStr = formatDisplayDate(slot.date);
+            // sendGoogleChatMessage(`⚠️ *Hủy đăng ký trực*\n👤 Thành viên: *${oldReg.userEmail}*\n📅 Ngày trực: *${dateStr}*\n📝 Ca trực: *${slot.title}*`);
           }
         }
       }
