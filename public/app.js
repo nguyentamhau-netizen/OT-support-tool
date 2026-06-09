@@ -731,9 +731,22 @@ function renderModal() {
         </div>
         <div class="modal-body">
           <p>${escapeHtml(modal.message)}</p>
+          ${modal.activeRegistrations && modal.activeRegistrations.length > 0 ? `
+            <div class="active-regs-section" style="margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px;">
+              <label style="font-weight: 700; display: block; margin-bottom: 8px;">Thành viên đang đăng ký:</label>
+              <div style="display: flex; flex-direction: column; gap: 8px; max-height: 150px; overflow-y: auto;">
+                ${modal.activeRegistrations.map(reg => `
+                  <div style="display: flex; align-items: center; justify-content: space-between; background: var(--bg); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line);">
+                    <span style="font-size: 14px; font-weight: 600;">${escapeHtml(userLabel(reg.userEmail))}</span>
+                    <button class="btn small danger" data-action="admin-cancel-reg" data-reg-id="${reg.registrationId}">Hủy</button>
+                  </div>
+                `).join("")}
+              </div>
+            </div>
+          ` : ""}
           ${modal.memberSelect ? `
             <div class="field" style="margin-top:14px">
-              <label>Member</label>
+              <label>Đăng ký cho thành viên</label>
               <select data-action="modal-member-select">
                 ${state.users
                   .filter((user) => user.status === "ACTIVE")
@@ -757,27 +770,17 @@ function openSlotModal(slotId) {
   if (!slot) return;
 
   if (isAdmin()) {
-    const names = getActiveRegistrations(slotId).map((registration) => userLabel(registration.userEmail)).join(", ");
-    if (remainingSlots(slot) <= 0) {
-      modal = {
-        type: "info",
-        title: "Slot đã đủ người",
-        message: `${formatDateLong(slot.date)} đã đủ slot${names ? `: ${names}` : "."}`,
-        primary: { label: "Close", action: "modal-close" }
-      };
-      render();
-      return;
-    }
-
+    const regs = getActiveRegistrations(slotId);
     modal = {
-      type: "register-slot",
+      type: "admin-manage-slot",
       slotId,
-      memberSelect: true,
+      title: "Admin quản lý slot",
+      message: `Thông tin slot trực ngày ${formatDateLong(slot.date)}.`,
+      activeRegistrations: regs,
+      memberSelect: remainingSlots(slot) > 0,
       defaultMemberEmail: session.email,
-      title: "Admin đăng ký member",
-      message: `Bạn muốn đăng ký trực ${formatDateLong(slot.date)} cho member được chọn phải không?${names ? ` Hiện đã có: ${names}.` : ""}`,
-      primary: { label: "Yes", action: "modal-confirm-register" },
-      secondary: { label: "No", action: "modal-close" }
+      primary: remainingSlots(slot) > 0 ? { label: "Đăng ký", action: "modal-confirm-register" } : null,
+      secondary: { label: "Đóng", action: "modal-close" }
     };
     render();
     return;
@@ -1305,6 +1308,20 @@ function bindShellEvents() {
       showToast("Đã hủy đăng ký ca trực!");
     }
     render();
+  });
+
+  document.querySelectorAll("[data-action='admin-cancel-reg']").forEach((button) => {
+    button.addEventListener("click", () => {
+      const regId = button.dataset.regId;
+      const error = cancelRegistration(regId);
+      if (error) {
+        modal = { type: "info", title: "Không thể hủy đăng ký", message: error, primary: { label: "Close", action: "modal-close" } };
+      } else {
+        modal = null;
+        showToast("Đã hủy đăng ký ca trực!");
+      }
+      render();
+    });
   });
 
   document.querySelector("#request-form")?.addEventListener("submit", (event) => {
