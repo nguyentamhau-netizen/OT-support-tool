@@ -10,6 +10,8 @@ let isBootstrapping = true;
 let bootstrapError = "";
 let saveStatus = "";
 let saveTimer = null;
+let isRefreshing = false;
+
 
 const app = document.querySelector("#app");
 
@@ -33,8 +35,12 @@ function getSettingValueClient(key, defaultValue = "") {
 }
 
 async function loadStateFromDb(sync = false) {
-  isBootstrapping = true;
-  bootstrapError = "";
+  if (sync) {
+    isRefreshing = true;
+  } else {
+    isBootstrapping = true;
+    bootstrapError = "";
+  }
   render();
 
   try {
@@ -48,12 +54,18 @@ async function loadStateFromDb(sync = false) {
     };
     isBootstrapping = false;
     bootstrapError = "";
+    isRefreshing = false;
     saveStatus = "";
     ensureMonth(selectedMonth);
     render();
   } catch (error) {
     isBootstrapping = false;
-    bootstrapError = error.message;
+    isRefreshing = false;
+    if (sync) {
+      saveStatus = `error: ${error.message}`;
+    } else {
+      bootstrapError = error.message;
+    }
     render();
   }
 }
@@ -550,7 +562,9 @@ function renderActionToolbar() {
     <div class="toolbar">
       <div></div>
       <div class="toolbar-group">
-        <button class="btn" data-action="refresh-db">Refresh DB</button>
+        <button class="btn" data-action="refresh-db" ${isRefreshing ? "disabled" : ""}>
+          ${isRefreshing ? '<span class="spinner"></span>Refreshing...' : 'Refresh'}
+        </button>
         <button class="btn primary" data-action="export-preview">Export preview</button>
       </div>
     </div>
