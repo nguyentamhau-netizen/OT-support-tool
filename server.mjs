@@ -580,7 +580,15 @@ async function syncFromTaiga() {
     }
   });
 
-  const issues = await taigaFetch(`/issues?project=${projectId}&page_size=100`);
+  let issues = [];
+  let page = 1;
+  while (true) {
+    const pageIssues = await taigaFetch(`/issues?project=${projectId}&page_size=100&page=${page}`);
+    if (!pageIssues || pageIssues.length === 0) break;
+    issues = issues.concat(pageIssues);
+    if (pageIssues.length < 100) break;
+    page++;
+  }
 
   const scheduleSlots = [];
   const capacities = [];
@@ -619,68 +627,85 @@ async function syncFromTaiga() {
       // Attributes might not be loaded or set yet
     }
 
-    scheduleSlots.push({
-      slotId,
-      date,
-      month,
-      dayOfWeek,
-      slotType,
-      title,
-      status: issue.assigned_to ? "FULL" : "OPEN",
-      createdBy: "taiga",
-      createdAt: issue.created_date,
-      updatedAt: issue.modified_date,
-      note: issue.description || "",
-      taigaIssueId: issue.id
-    });
-
-    const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
-    capacities.push({
-      capacityId,
-      slotId,
-      roleName: "QC/PO",
-      requiredCount: 1,
-      hoursPerPerson: hours,
-      manMonthFactor,
-      createdAt: issue.created_date,
-      updatedAt: issue.modified_date,
-      note: ""
-    });
-
-    if (slotType === "HOLIDAY" || slotType === "TET") {
-      holidaySettings.push({
-        holidayId: `hol_${date.replace(/-/g, "_")}`,
+    const existingSlotIndex = scheduleSlots.findIndex(s => s.date === date);
+    if (existingSlotIndex === -1) {
+      scheduleSlots.push({
+        slotId,
         date,
-        name: title,
-        holidayType: slotType,
-        requiredRole: "QC/PO",
+        month,
+        dayOfWeek,
+        slotType,
+        title,
+        status: issue.assigned_to ? "FULL" : "OPEN",
+        createdBy: "taiga",
+        createdAt: issue.created_date,
+        updatedAt: issue.modified_date,
+        note: issue.description || "",
+        taigaIssueId: issue.id
+      });
+
+      const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
+      capacities.push({
+        capacityId,
+        slotId,
+        roleName: "QC/PO",
         requiredCount: 1,
         hoursPerPerson: hours,
         manMonthFactor,
-        note: issue.description || "",
-        createdBy: "taiga",
         createdAt: issue.created_date,
-        updatedAt: issue.modified_date
+        updatedAt: issue.modified_date,
+        note: ""
       });
+
+      if (slotType === "HOLIDAY" || slotType === "TET") {
+        holidaySettings.push({
+          holidayId: `hol_${date.replace(/-/g, "_")}`,
+          date,
+          name: title,
+          holidayType: slotType,
+          requiredRole: "QC/PO",
+          requiredCount: 1,
+          hoursPerPerson: hours,
+          manMonthFactor,
+          note: issue.description || "",
+          createdBy: "taiga",
+          createdAt: issue.created_date,
+          updatedAt: issue.modified_date
+        });
+      }
+    } else {
+      if (issue.assigned_to) {
+        scheduleSlots[existingSlotIndex].status = "FULL";
+      }
     }
 
     if (issue.assigned_to) {
       const userEmail = taigaUserIdToEmail[issue.assigned_to] || "";
       if (userEmail) {
         const username = userEmail.split("@")[0];
-        registrations.push({
-          registrationId: `reg_${issue.id}_${username.replace(/\./g, "_")}`,
-          slotId,
-          capacityId,
-          userEmail,
-          registeredByEmail: userEmail,
-          status: "ACTIVE",
-          approvedStatus: "AUTO_APPROVED",
-          source: "self_registration",
-          createdAt: issue.created_date,
-          updatedAt: issue.modified_date,
-          note: ""
-        });
+        const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
+        
+        const registrationExists = registrations.some(r => 
+          r.slotId === slotId && 
+          r.userEmail.toLowerCase() === userEmail.toLowerCase() && 
+          r.status === "ACTIVE"
+        );
+
+        if (!registrationExists) {
+          registrations.push({
+            registrationId: `reg_${issue.id}_${username.replace(/\./g, "_")}`,
+            slotId,
+            capacityId,
+            userEmail,
+            registeredByEmail: userEmail,
+            status: "ACTIVE",
+            approvedStatus: "AUTO_APPROVED",
+            source: "self_registration",
+            createdAt: issue.created_date,
+            updatedAt: issue.modified_date,
+            note: ""
+          });
+        }
       }
     }
 

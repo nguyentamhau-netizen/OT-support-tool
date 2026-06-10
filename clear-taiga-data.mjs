@@ -40,6 +40,10 @@ const tableSchemas = {
 };
 
 async function getAdminToken() {
+  if (process.env.TAIGA_ADMIN_TOKEN) {
+    return process.env.TAIGA_ADMIN_TOKEN;
+  }
+
   if (!username || !password) {
     throw new Error("Missing TAIGA_USERNAME or TAIGA_PASSWORD in .env.local");
   }
