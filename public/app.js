@@ -390,12 +390,12 @@ function renderLogin(message = "") {
       <section class="login-panel">
         <div class="login-box">
           <h2>Sign in</h2>
-          <p class="muted">Đăng nhập bằng tài khoản Google Workspace hoặc Username của Taiga.</p>
+          <p class="muted">Đăng nhập bằng tài khoản Taiga của bạn.</p>
           ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
           <form class="form" id="login-form">
             <div class="field">
-              <label for="email">Email or Username</label>
-              <input id="email" name="email" type="text" placeholder="name@kyanon.digital" required />
+              <label for="email">Taiga Username / Email</label>
+              <input id="email" name="email" type="text" placeholder="Username hoặc Email" required />
             </div>
             <div class="field">
               <label for="password">Taiga Password</label>
