@@ -471,7 +471,9 @@ function renderMonthSelector() {
 
   return `
     <div class="month-selector-container">
-      <button class="nav-btn" type="button" data-action="prev-month" title="Previous Month">
+      <button class="today-btn" type="button" data-action="today-month">Hôm nay</button>
+      <div class="nav-divider"></div>
+      <button class="nav-btn" type="button" data-action="prev-month" title="Tháng trước">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
       </button>
       <div class="select-wrapper">
@@ -484,7 +486,7 @@ function renderMonthSelector() {
           ${yearOptions}
         </select>
       </div>
-      <button class="nav-btn" type="button" data-action="next-month" title="Next Month">
+      <button class="nav-btn" type="button" data-action="next-month" title="Tháng sau">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
       </button>
     </div>
@@ -1086,6 +1088,14 @@ function bindShellEvents() {
     localStorage.removeItem("ot-support-session");
     session = null;
     render();
+  });
+
+  document.querySelectorAll("[data-action='today-month']").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const today = new Date();
+      selectedMonth = monthKey(today);
+      loadStateFromDb(false, selectedMonth);
+    });
   });
 
   document.querySelectorAll("[data-action='prev-month']").forEach((btn) => {
