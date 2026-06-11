@@ -344,6 +344,7 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   const satDisplay = formatDisplayDate(saturdayStr);
   const sunDisplay = formatDisplayDate(sundayStr);
 
+  const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || await getSettingValue("app_url") || "http://localhost:3000";
   let msgText = `📅 *THÔNG BÁO LỊCH TRỰC CUỐI TUẦN (${satDisplay} - ${sunDisplay})*\n\n`;
 
   // 1. Process Saturday Slots
@@ -351,9 +352,9 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   const satRegs = (localState.registrations || []).filter(r => satSlotIds.includes(r.slotId) && r.status === "ACTIVE");
   if (satRegs.length > 0) {
     const assignees = [...new Set(satRegs.map(r => `<users/${r.userEmail}>`))].join(", ");
-    msgText += `*Thứ 7 (${satDisplay}):* ${assignees}\n`;
+    msgText += `*Thứ 7 (${satDisplay}):* ${assignees}\n\n`;
   } else {
-    msgText += `*Thứ 7 (${satDisplay}):* ⚠️ Chưa có người trực\n`;
+    msgText += `*Thứ 7 (${satDisplay}):* ⚠️ Chưa có người trực -> <${appUrl}|Đăng ký tại đây>\n\n`;
   }
 
   // 2. Process Sunday Slots
@@ -361,12 +362,12 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   const sunRegs = (localState.registrations || []).filter(r => sunSlotIds.includes(r.slotId) && r.status === "ACTIVE");
   if (sunRegs.length > 0) {
     const assignees = [...new Set(sunRegs.map(r => `<users/${r.userEmail}>`))].join(", ");
-    msgText += `*Chủ Nhật (${sunDisplay}):* ${assignees}\n`;
+    msgText += `*Chủ Nhật (${sunDisplay}):* ${assignees}\n\n`;
   } else {
-    msgText += `*Chủ Nhật (${sunDisplay}):* ⚠️ Chưa có người trực\n`;
+    msgText += `*Chủ Nhật (${sunDisplay}):* ⚠️ Chưa có người trực -> <${appUrl}|Đăng ký tại đây>\n\n`;
   }
 
-  msgText += `\n👉 Các thành viên vui lòng kiểm tra và hoàn thành nhiệm vụ hỗ trợ dự án Amaze.`;
+  msgText += `👉 Các thành viên vui lòng kiểm tra và hoàn thành nhiệm vụ hỗ trợ dự án Amaze.`;
 
   const success = await sendGoogleChatMessage(msgText);
 
