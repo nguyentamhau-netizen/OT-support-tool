@@ -273,7 +273,7 @@ const isAfternoonShift = (title) => {
 
 async function sendUpcomingReminders(targetDateStr) {
   const localState = await loadLocalState();
-  const slots = (localState.scheduleSlots || []).filter(s => s.date === targetDateStr && !isAfternoonShift(s.title));
+  const slots = (localState.scheduleSlots || []).filter(s => s.date === targetDateStr);
   if (!slots.length) return { sentCount: 0, openCount: 0 };
 
   let sentCount = 0;
@@ -326,8 +326,8 @@ async function sendUpcomingReminders(targetDateStr) {
 
 async function sendWeekendReminders(saturdayStr, sundayStr) {
   const localState = await loadLocalState();
-  const satSlots = (localState.scheduleSlots || []).filter(s => s.date === saturdayStr && !isAfternoonShift(s.title));
-  const sunSlots = (localState.scheduleSlots || []).filter(s => s.date === sundayStr && !isAfternoonShift(s.title));
+  const satSlots = (localState.scheduleSlots || []).filter(s => s.date === saturdayStr);
+  const sunSlots = (localState.scheduleSlots || []).filter(s => s.date === sundayStr);
 
   // Check if a weekend reminder was already sent in the last 12 hours to prevent duplicate triggers
   const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
@@ -347,43 +347,23 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   let msgText = `📅 *THÔNG BÁO LỊCH TRỰC CUỐI TUẦN (${satDisplay} - ${sunDisplay})*\n\n`;
 
   // 1. Process Saturday Slots
-  msgText += `*Thứ 7 (${satDisplay}):*\n`;
-  const uniqueSatTitles = [...new Set(satSlots.map(s => s.title))];
-  if (uniqueSatTitles.length === 0) {
-    msgText += `_Không có ca trực nào được cấu hình._\n`;
+  const satSlotIds = satSlots.map(s => s.slotId);
+  const satRegs = (localState.registrations || []).filter(r => satSlotIds.includes(r.slotId) && r.status === "ACTIVE");
+  if (satRegs.length > 0) {
+    const assignees = [...new Set(satRegs.map(r => `<users/${r.userEmail}>`))].join(", ");
+    msgText += `*Thứ 7 (${satDisplay}):* ${assignees}\n`;
   } else {
-    for (const title of uniqueSatTitles) {
-      const matchingSlots = satSlots.filter(s => s.title === title);
-      const slotIds = matchingSlots.map(s => s.slotId);
-      const regs = (localState.registrations || []).filter(r => slotIds.includes(r.slotId) && r.status === "ACTIVE");
-      if (regs.length > 0) {
-        const assignees = regs.map(r => `<users/${r.userEmail}>`).join(", ");
-        msgText += `- Ca *${title}*: ${assignees}\n`;
-      } else {
-        msgText += `- Ca *${title}*: ⚠️ Chưa có người trực\n`;
-      }
-    }
+    msgText += `*Thứ 7 (${satDisplay}):* ⚠️ Chưa có người trực\n`;
   }
 
-  msgText += `\n`;
-
   // 2. Process Sunday Slots
-  msgText += `*Chủ Nhật (${sunDisplay}):*\n`;
-  const uniqueSunTitles = [...new Set(sunSlots.map(s => s.title))];
-  if (uniqueSunTitles.length === 0) {
-    msgText += `_Không có ca trực nào được cấu hình._\n`;
+  const sunSlotIds = sunSlots.map(s => s.slotId);
+  const sunRegs = (localState.registrations || []).filter(r => sunSlotIds.includes(r.slotId) && r.status === "ACTIVE");
+  if (sunRegs.length > 0) {
+    const assignees = [...new Set(sunRegs.map(r => `<users/${r.userEmail}>`))].join(", ");
+    msgText += `*Chủ Nhật (${sunDisplay}):* ${assignees}\n`;
   } else {
-    for (const title of uniqueSunTitles) {
-      const matchingSlots = sunSlots.filter(s => s.title === title);
-      const slotIds = matchingSlots.map(s => s.slotId);
-      const regs = (localState.registrations || []).filter(r => slotIds.includes(r.slotId) && r.status === "ACTIVE");
-      if (regs.length > 0) {
-        const assignees = regs.map(r => `<users/${r.userEmail}>`).join(", ");
-        msgText += `- Ca *${title}*: ${assignees}\n`;
-      } else {
-        msgText += `- Ca *${title}*: ⚠️ Chưa có người trực\n`;
-      }
-    }
+    msgText += `*Chủ Nhật (${sunDisplay}):* ⚠️ Chưa có người trực\n`;
   }
 
   msgText += `\n👉 Các thành viên vui lòng kiểm tra và hoàn thành nhiệm vụ hỗ trợ dự án Amaze.`;
