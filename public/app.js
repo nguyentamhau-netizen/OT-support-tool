@@ -52,17 +52,20 @@ function getSettingValueClient(key, defaultValue = "") {
   return found ? found.value : defaultValue;
 }
 
-async function loadStateFromDb(sync = false) {
-  if (sync) {
-    isRefreshing = true;
-  } else {
-    isBootstrapping = true;
-    bootstrapError = "";
+async function loadStateFromDb(sync = false, month = selectedMonth, isPolling = false) {
+  if (!isPolling) {
+    if (sync) {
+      isRefreshing = true;
+    } else {
+      isBootstrapping = true;
+      bootstrapError = "";
+    }
+    render();
   }
-  render();
 
   try {
-    const url = sync ? "/api/state?sync=true" : "/api/state";
+    let url = `/api/state?month=${month}`;
+    if (sync) url += "&sync=true";
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot load Google Sheets DB.");
@@ -74,7 +77,6 @@ async function loadStateFromDb(sync = false) {
     bootstrapError = "";
     isRefreshing = false;
     saveStatus = "";
-    ensureMonth(selectedMonth);
     render();
   } catch (error) {
     isBootstrapping = false;
@@ -84,27 +86,6 @@ async function loadStateFromDb(sync = false) {
     } else {
       bootstrapError = error.message;
     }
-    render();
-  }
-}
-
-async function saveStateToDb() {
-  try {
-    const response = await fetch("/api/state", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state })
-    });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot save Google Sheets DB.");
-    state = {
-      ...emptyState(),
-      ...payload.state
-    };
-    saveStatus = "saved";
-    render();
-  } catch (error) {
-    saveStatus = `error: ${error.message}`;
     render();
   }
 }
@@ -123,12 +104,6 @@ function emptyState() {
     chatNotifications: [],
     db: null
   };
-}
-
-function persist() {
-  saveStatus = "saving";
-  window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(saveStateToDb, 350);
 }
 
 function nowIso() {
@@ -190,126 +165,9 @@ function currentUser() {
 }
 
 function getSlotsForMonth(month) {
-  ensureMonth(month);
   return state.scheduleSlots
     .filter((slot) => slot.month === month)
     .sort((a, b) => a.date.localeCompare(b.date));
-}
-
-function ensureMonth(month) {
-  const [year, monthIndex] = month.split("-").map(Number);
-  const daysInMonth = new Date(year, monthIndex, 0).getDate();
-  const existingDates = new Set(state.scheduleSlots.filter((slot) => slot.month === month).map((slot) => slot.date));
-  const holidayDates = new Set(
-    state.holidaySettings
-      .filter((holiday) => holiday.date.startsWith(month))
-      .map((holiday) => holiday.date)
-  );
-
-  let hasChanges = false;
-
-  for (let day = 1; day <= daysInMonth; day += 1) {
-    const date = new Date(year, monthIndex - 1, day);
-    const key = dateKey(date);
-    if (![0, 6].includes(date.getDay())) continue;
-    if (existingDates.has(key) || holidayDates.has(key)) continue;
-
-    const slotId = `slot_${key.replaceAll("-", "_")}`;
-    const capacityId = `cap_${key.replaceAll("-", "_")}_qc_po`;
-    state.scheduleSlots.push({
-      slotId,
-      date: key,
-      month,
-      dayOfWeek: dayName(date),
-      slotType: "WEEKEND",
-      title: "Weekend Support",
-      status: "OPEN",
-      createdBy: "system",
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      note: "Auto-generated weekend slot"
-    });
-    state.capacities.push({
-      capacityId,
-      slotId,
-      roleName: "QC/PO",
-      requiredCount: 1,
-      hoursPerPerson: 8,
-      manMonthFactor: 1,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      note: ""
-    });
-    hasChanges = true;
-  }
-
-  state.holidaySettings
-    .filter((holiday) => holiday.date.startsWith(month))
-    .forEach((holiday) => {
-      const slotId = `slot_${holiday.date.replaceAll("-", "_")}`;
-      const existing = state.scheduleSlots.find((slot) => slot.date === holiday.date);
-      if (existing) {
-        if (existing.slotType !== holiday.holidayType || existing.title !== holiday.name || existing.note !== holiday.note) {
-          existing.slotType = holiday.holidayType;
-          existing.title = holiday.name;
-          existing.note = holiday.note;
-          existing.updatedAt = nowIso();
-          hasChanges = true;
-        }
-      } else {
-        state.scheduleSlots.push({
-          slotId,
-          date: holiday.date,
-          month,
-          dayOfWeek: dayName(parseLocalDate(holiday.date)),
-          slotType: holiday.holidayType,
-          title: holiday.name,
-          status: "OPEN",
-          createdBy: holiday.createdBy,
-          createdAt: holiday.createdAt,
-          updatedAt: holiday.updatedAt,
-          note: holiday.note
-        });
-        hasChanges = true;
-      }
-
-      const existingCapacity = state.capacities.find((capacity) => capacity.slotId === slotId);
-      if (existingCapacity) {
-        if (
-          existingCapacity.roleName !== holiday.requiredRole ||
-          existingCapacity.requiredCount !== holiday.requiredCount ||
-          existingCapacity.hoursPerPerson !== holiday.hoursPerPerson ||
-          existingCapacity.manMonthFactor !== holiday.manMonthFactor
-        ) {
-          Object.assign(existingCapacity, {
-            roleName: holiday.requiredRole,
-            requiredCount: holiday.requiredCount,
-            hoursPerPerson: holiday.hoursPerPerson,
-            manMonthFactor: holiday.manMonthFactor,
-            updatedAt: holiday.updatedAt,
-            note: holiday.note
-          });
-          hasChanges = true;
-        }
-      } else {
-        state.capacities.push({
-          capacityId: `cap_${holiday.date.replaceAll("-", "_")}_${holiday.requiredRole.toLowerCase().replaceAll("/", "_")}`,
-          slotId,
-          roleName: holiday.requiredRole,
-          requiredCount: holiday.requiredCount,
-          hoursPerPerson: holiday.hoursPerPerson,
-          manMonthFactor: holiday.manMonthFactor,
-          createdAt: holiday.createdAt,
-          updatedAt: holiday.updatedAt,
-          note: holiday.note
-        });
-        hasChanges = true;
-      }
-    });
-
-  if (hasChanges) {
-    persist();
-  }
 }
 
 function getCapacity(slotId) {
@@ -326,7 +184,7 @@ function findUserMonthlyRegistration(month, email) {
     return (
       registration.status === "ACTIVE" &&
       registration.userEmail.toLowerCase() === email.toLowerCase() &&
-      registeredSlot.month === month
+      registeredSlot && registeredSlot.month === month
     );
   });
 }
@@ -360,47 +218,54 @@ function refreshSlotStatus(slotId) {
   slot.updatedAt = nowIso();
 }
 
-function registerSlot(slotId, userEmail, registeredByEmail, options = {}) {
-  const slot = state.scheduleSlots.find((item) => item.slotId === slotId);
-  const capacity = getCapacity(slotId);
-  const user = state.users.find((item) => item.email.toLowerCase() === userEmail.toLowerCase());
-
-  if (!slot || !capacity || !user || user.status !== "ACTIVE") return "User hoặc slot không khả dụng.";
-  if (isPastDate(slot.date) && !options.allowPast) return "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request.";
-  if (remainingSlots(slot) <= 0) return "Slot này đã đủ người đăng ký.";
-  if (!options.allowMonthlyOverride && findUserMonthlyRegistration(slot.month, userEmail)) return "Bạn đã đăng ký một ngày trực trong tháng này rồi.";
-
-  state.registrations.push({
-    registrationId: `reg_${Date.now()}_${user.username.replaceAll(".", "_")}`,
-    slotId,
-    capacityId: capacity.capacityId,
-    userEmail,
-    registeredByEmail,
-    status: "ACTIVE",
-    approvedStatus: registeredByEmail === userEmail ? "AUTO_APPROVED" : "ADMIN_APPROVED",
-    source: registeredByEmail === userEmail ? "self_registration" : "admin_assignment",
-    createdAt: nowIso(),
-    updatedAt: nowIso(),
-    note: ""
-  });
-  refreshSlotStatus(slotId);
-  audit(registeredByEmail, "REGISTRATION_CREATE", "registration", slotId, "", JSON.stringify({ slotId, userEmail }));
-  persist();
-  return "";
+async function registerSlot(slotId, userEmail) {
+  try {
+    saveStatus = "saving";
+    render();
+    const response = await fetch("/api/slots/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slotId, userEmail })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot register slot.");
+    state = {
+      ...emptyState(),
+      ...payload.state
+    };
+    saveStatus = "saved";
+    showToast("Đăng ký ca trực thành công!");
+    render();
+  } catch (error) {
+    saveStatus = `error: ${error.message}`;
+    modal = { type: "info", title: "Không thể đăng ký", message: error.message, primary: { label: "Close", action: "modal-close" } };
+    render();
+  }
 }
 
-function cancelRegistration(registrationId) {
-  const registration = state.registrations.find((item) => item.registrationId === registrationId);
-  if (!registration) return "Không tìm thấy đăng ký.";
-  const slot = state.scheduleSlots.find((item) => item.slotId === registration.slotId);
-  if (slot && isPastDate(slot.date) && !isAdmin()) return "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request.";
-  if (!isAdmin() && registration.userEmail.toLowerCase() !== session.email.toLowerCase()) return "Bạn chỉ có thể hủy đăng ký của chính mình.";
-  registration.status = "CANCELLED";
-  registration.updatedAt = nowIso();
-  refreshSlotStatus(registration.slotId);
-  audit(session.email, "REGISTRATION_CANCEL", "registration", registrationId, "", JSON.stringify(registration));
-  persist();
-  return "";
+async function cancelRegistration(registrationId) {
+  try {
+    saveStatus = "saving";
+    render();
+    const response = await fetch("/api/slots/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ registrationId })
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot cancel registration.");
+    state = {
+      ...emptyState(),
+      ...payload.state
+    };
+    saveStatus = "saved";
+    showToast("Đã hủy đăng ký ca trực!");
+    render();
+  } catch (error) {
+    saveStatus = `error: ${error.message}`;
+    modal = { type: "info", title: "Không thể hủy đăng ký", message: error.message, primary: { label: "Close", action: "modal-close" } };
+    render();
+  }
 }
 
 function audit(actorEmail, action, entityType, entityId, beforeJson, afterJson) {
@@ -1228,7 +1093,7 @@ function bindShellEvents() {
       const date = parseLocalDate(`${selectedMonth}-01`);
       date.setMonth(date.getMonth() - 1);
       selectedMonth = monthKey(date);
-      render();
+      loadStateFromDb(false, selectedMonth);
     });
   });
 
@@ -1237,7 +1102,7 @@ function bindShellEvents() {
       const date = parseLocalDate(`${selectedMonth}-01`);
       date.setMonth(date.getMonth() + 1);
       selectedMonth = monthKey(date);
-      render();
+      loadStateFromDb(false, selectedMonth);
     });
   });
 
@@ -1246,7 +1111,7 @@ function bindShellEvents() {
       const [year] = selectedMonth.split("-");
       const monthVal = e.target.value;
       selectedMonth = `${year}-${monthVal}`;
-      render();
+      loadStateFromDb(false, selectedMonth);
     });
   });
 
@@ -1255,12 +1120,12 @@ function bindShellEvents() {
       const [, month] = selectedMonth.split("-");
       const yearVal = e.target.value;
       selectedMonth = `${yearVal}-${month}`;
-      render();
+      loadStateFromDb(false, selectedMonth);
     });
   });
 
   document.querySelector("[data-action='refresh-db']")?.addEventListener("click", () => {
-    loadStateFromDb(true);
+    loadStateFromDb(true, selectedMonth);
   });
 
   document.querySelector("[data-action='export-preview']")?.addEventListener("click", () => {
@@ -1324,136 +1189,164 @@ function bindShellEvents() {
     });
   });
 
-  document.querySelector("#request-form")?.addEventListener("submit", (event) => {
+  document.querySelector("#request-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
-    state.updateRequests.push({
-      requestId: `req_${Date.now()}`,
-      userEmail: session.email,
-      targetRegistrationId: "",
-      targetDate: data.targetDate,
-      requestedHours: Number(data.requestedHours),
-      reason: data.reason,
-      evidenceUrl: data.evidenceUrl,
-      status: "PENDING",
-      adminNote: "",
-      reviewedBy: "",
-      createdAt: nowIso(),
-      reviewedAt: ""
-    });
-    audit(session.email, "UPDATE_REQUEST_CREATE", "update_request", data.targetDate, "", JSON.stringify(data));
-    persist();
-    render();
+    try {
+      saveStatus = "saving";
+      render();
+      const response = await fetch("/api/update-requests/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetDate: data.targetDate,
+          requestedHours: Number(data.requestedHours),
+          reason: data.reason,
+          evidenceUrl: data.evidenceUrl
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot submit update request.");
+      state = {
+        ...emptyState(),
+        ...payload.state
+      };
+      saveStatus = "saved";
+      showToast("Gửi yêu cầu cập nhật thành công!");
+      render();
+    } catch (error) {
+      saveStatus = `error: ${error.message}`;
+      alert("Error submitting request: " + error.message);
+      render();
+    }
   });
 
   document.querySelectorAll("[data-action='review-request']").forEach((button) => {
-    button.addEventListener("click", () => {
-      const request = state.updateRequests.find((item) => item.requestId === button.dataset.request);
-      if (!request) return;
-      request.status = button.dataset.status;
-      request.reviewedBy = session.email;
-      request.reviewedAt = nowIso();
-      audit(session.email, `UPDATE_REQUEST_${button.dataset.status}`, "update_request", request.requestId, "", JSON.stringify(request));
-      persist();
-      render();
+    button.addEventListener("click", async () => {
+      const requestId = button.dataset.request;
+      const status = button.dataset.status;
+      try {
+        saveStatus = "saving";
+        render();
+        const response = await fetch("/api/update-requests/review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId, status })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot review update request.");
+        state = {
+          ...emptyState(),
+          ...payload.state
+        };
+        saveStatus = "saved";
+        showToast(`Yêu cầu đã được ${status === "APPROVED" ? "Phê duyệt" : "Từ chối"}!`);
+        render();
+      } catch (error) {
+        saveStatus = `error: ${error.message}`;
+        alert("Error reviewing request: " + error.message);
+        render();
+      }
     });
   });
 
-  document.querySelector("#user-form")?.addEventListener("submit", (event) => {
+  document.querySelector("#user-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
     const email = data.email.trim().toLowerCase();
-    if (!email.endsWith(`@${COMPANY_DOMAIN}`)) {
-      alert(`Email must use @${COMPANY_DOMAIN}.`);
-      return;
+    try {
+      saveStatus = "saving";
+      render();
+      const response = await fetch("/api/users/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          displayName: data.displayName.trim(),
+          role: data.role
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot add user.");
+      state = {
+        ...emptyState(),
+        ...payload.state
+      };
+      saveStatus = "saved";
+      showToast("Thêm thành viên thành công!");
+      render();
+    } catch (error) {
+      saveStatus = `error: ${error.message}`;
+      alert("Error adding user: " + error.message);
+      render();
     }
-    if (state.users.some((user) => user.email.toLowerCase() === email)) {
-      alert("Email already exists in users sheet.");
-      return;
-    }
-    const username = email.split("@")[0];
-    const user = {
-      userId: `usr_${username.replaceAll(".", "_")}`,
-      email,
-      username,
-      displayName: data.displayName.trim(),
-      role: data.role,
-      status: "ACTIVE",
-      source: "admin_app",
-      createdAt: nowIso(),
-      updatedAt: nowIso()
-    };
-    state.users.push(user);
-    audit(session.email, "USER_CREATE", "user", user.email, "", JSON.stringify(user));
-    persist();
-    render();
   });
 
   document.querySelectorAll("[data-action='deactivate-user'], [data-action='reactivate-user']").forEach((button) => {
-    button.addEventListener("click", () => {
-      const user = state.users.find((item) => item.email === button.dataset.email);
-      if (!user || user.email.toLowerCase() === ADMIN_EMAIL) return;
-      const before = JSON.stringify(user);
-      user.status = button.dataset.action === "deactivate-user" ? "INACTIVE" : "ACTIVE";
-      user.updatedAt = nowIso();
-      audit(session.email, `USER_${user.status}`, "user", user.email, before, JSON.stringify(user));
-      persist();
-      render();
+    button.addEventListener("click", async () => {
+      const email = button.dataset.email;
+      const status = button.dataset.action === "deactivate-user" ? "INACTIVE" : "ACTIVE";
+      try {
+        saveStatus = "saving";
+        render();
+        const response = await fetch("/api/users/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, status })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot update user status.");
+        state = {
+          ...emptyState(),
+          ...payload.state
+        };
+        saveStatus = "saved";
+        showToast(`${status === "ACTIVE" ? "Kích hoạt" : "Khóa"} thành viên thành công!`);
+        render();
+      } catch (error) {
+        saveStatus = `error: ${error.message}`;
+        alert("Error updating user status: " + error.message);
+        render();
+      }
     });
   });
 
-  document.querySelector("#holiday-form")?.addEventListener("submit", (event) => {
+  document.querySelector("#holiday-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
-    const start = parseLocalDate(data.startDate);
-    const end = parseLocalDate(data.endDate);
-    if (end < start) {
-      alert("End date must be after or equal to start date.");
-      return;
-    }
-
-    const createdDates = [];
-    const cursor = new Date(start);
-    while (cursor <= end) {
-      const date = dateKey(cursor);
-      const existing = state.holidaySettings.find((holiday) => holiday.date === date);
-      const payload = {
-        holidayId: `hol_${date.replaceAll("-", "_")}`,
-        date,
-        name: data.name,
-        holidayType: data.holidayType,
-        requiredRole: data.requiredRole,
-        requiredCount: Number(data.requiredCount),
-        hoursPerPerson: Number(data.hoursPerPerson),
-        manMonthFactor: Number(data.manMonthFactor),
-        note: data.note,
-        createdBy: session.email,
-        createdAt: nowIso(),
-        updatedAt: nowIso()
+    try {
+      saveStatus = "saving";
+      render();
+      const response = await fetch("/api/holidays/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          startDate: data.startDate,
+          endDate: data.endDate,
+          name: data.name,
+          holidayType: data.holidayType,
+          requiredRole: data.requiredRole,
+          requiredCount: Number(data.requiredCount),
+          hoursPerPerson: Number(data.hoursPerPerson),
+          manMonthFactor: Number(data.manMonthFactor),
+          note: data.note
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot create holiday slots.");
+      state = {
+        ...emptyState(),
+        ...payload.state
       };
-
-      if (existing) {
-        Object.assign(existing, {
-          name: payload.name,
-          holidayType: payload.holidayType,
-          requiredRole: payload.requiredRole,
-          requiredCount: payload.requiredCount,
-          hoursPerPerson: payload.hoursPerPerson,
-          manMonthFactor: payload.manMonthFactor,
-          note: payload.note,
-          updatedAt: payload.updatedAt
-        });
-      } else {
-        state.holidaySettings.push(payload);
-      }
-      createdDates.push(date);
-      cursor.setDate(cursor.getDate() + 1);
+      selectedMonth = data.startDate.slice(0, 7);
+      saveStatus = "saved";
+      showToast("Tạo các ca trực ngày lễ thành công!");
+      render();
+    } catch (error) {
+      saveStatus = `error: ${error.message}`;
+      alert("Error creating holiday slots: " + error.message);
+      render();
     }
-
-    selectedMonth = data.startDate.slice(0, 7);
-    audit(session.email, "HOLIDAY_DURATION_CREATE", "holiday_setting", `${data.startDate}_${data.endDate}`, "", JSON.stringify({ ...data, dates: createdDates }));
-    persist();
-    render();
   });
 
   document.querySelector("#chat-settings-form")?.addEventListener("submit", async (event) => {
@@ -1467,7 +1360,7 @@ function bindShellEvents() {
       });
       if (response.ok) {
         alert("Settings saved successfully.");
-        await loadStateFromDb();
+        await loadStateFromDb(false, selectedMonth);
       } else {
         alert("Failed to save settings.");
       }
@@ -1502,7 +1395,7 @@ function bindShellEvents() {
       const data = await response.json();
       if (response.ok && data.ok) {
         alert(`Reminders triggered! Sent: ${data.sentCount} notifications, Open slots warned: ${data.openCount}.`);
-        await loadStateFromDb();
+        await loadStateFromDb(false, selectedMonth);
       } else {
         alert("Failed to trigger reminders.");
       }
@@ -1529,4 +1422,12 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-loadStateFromDb();
+loadStateFromDb(false, selectedMonth);
+
+// Auto-polling background synchronization (every 30 seconds)
+setInterval(async () => {
+  if (session && document.visibilityState === "visible" && !isRefreshing && !isBootstrapping) {
+    console.log("[POLLING] Fetching latest state from server...");
+    await loadStateFromDb(false, selectedMonth, true);
+  }
+}, 30 * 1000);

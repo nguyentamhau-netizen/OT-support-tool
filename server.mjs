@@ -432,6 +432,164 @@ function dateKeyString(date) {
   return `${year}-${month}-${day}`;
 }
 
+function parseLocalDate(value) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
+function isPastDate(dateStr) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  return date < today;
+}
+
+function findUserMonthlyRegistration(registrations, slots, month, email) {
+  return registrations.find(r => {
+    const slot = slots.find(s => s.slotId === r.slotId);
+    return (
+      r.status === "ACTIVE" &&
+      r.userEmail.toLowerCase() === email.toLowerCase() &&
+      slot && slot.month === month
+    );
+  });
+}
+
+function remainingSlots(slot, capacity, registrations) {
+  const activeRegs = registrations.filter(r => r.slotId === slot.slotId && r.status === "ACTIVE");
+  return Math.max(0, (capacity ? Number(capacity.requiredCount) : 0) - activeRegs.length);
+}
+
+async function ensureMonthBackend(month) {
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) return;
+
+  const [year, monthIndex] = month.split("-").map(Number);
+  const daysInMonth = new Date(year, monthIndex, 0).getDate();
+
+  const scheduleSlots = await readCSVTable("schedule_slots");
+  const capacities = await readCSVTable("slot_capacities");
+  const holidaySettings = await readCSVTable("holiday_settings");
+
+  const existingDates = new Set(scheduleSlots.filter(s => s.month === month).map(s => s.date));
+  const holidayDates = new Set(
+    holidaySettings
+      .filter(h => h.date.startsWith(month))
+      .map(h => h.date)
+  );
+
+  let hasChanges = false;
+
+  const dayName = (date) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][date.getDay()];
+  const nowIso = () => new Date().toISOString();
+
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = new Date(year, monthIndex - 1, day);
+    const key = dateKeyString(date);
+    if (![0, 6].includes(date.getDay())) continue;
+    if (existingDates.has(key) || holidayDates.has(key)) continue;
+
+    const slotId = `slot_${key.replace(/-/g, "_")}`;
+    const capacityId = `cap_${key.replace(/-/g, "_")}_qc_po`;
+    scheduleSlots.push({
+      slotId,
+      date: key,
+      month,
+      dayOfWeek: dayName(date),
+      slotType: "WEEKEND",
+      title: "Weekend Support",
+      status: "OPEN",
+      createdBy: "system",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      note: "Auto-generated weekend slot",
+      taigaIssueId: ""
+    });
+    capacities.push({
+      capacityId,
+      slotId,
+      roleName: "QC/PO",
+      requiredCount: 1,
+      hoursPerPerson: 8,
+      manMonthFactor: 1,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      note: ""
+    });
+    hasChanges = true;
+  }
+
+  holidaySettings
+    .filter(h => h.date.startsWith(month))
+    .forEach(holiday => {
+      const slotId = `slot_${holiday.date.replace(/-/g, "_")}`;
+      const existing = scheduleSlots.find(s => s.date === holiday.date);
+      if (existing) {
+        if (existing.slotType !== holiday.holidayType || existing.title !== holiday.name || existing.note !== holiday.note) {
+          existing.slotType = holiday.holidayType;
+          existing.title = holiday.name;
+          existing.note = holiday.note;
+          existing.updatedAt = nowIso();
+          hasChanges = true;
+        }
+      } else {
+        scheduleSlots.push({
+          slotId,
+          date: holiday.date,
+          month,
+          dayOfWeek: dayName(parseLocalDate(holiday.date)),
+          slotType: holiday.holidayType,
+          title: holiday.name,
+          status: "OPEN",
+          createdBy: holiday.createdBy,
+          createdAt: holiday.createdAt,
+          updatedAt: holiday.updatedAt,
+          note: holiday.note,
+          taigaIssueId: ""
+        });
+        hasChanges = true;
+      }
+
+      const existingCapacity = capacities.find(c => c.slotId === slotId);
+      if (existingCapacity) {
+        if (
+          existingCapacity.roleName !== holiday.requiredRole ||
+          Number(existingCapacity.requiredCount) !== Number(holiday.requiredCount) ||
+          Number(existingCapacity.hoursPerPerson) !== Number(holiday.hoursPerPerson) ||
+          Number(existingCapacity.manMonthFactor) !== Number(holiday.manMonthFactor)
+        ) {
+          Object.assign(existingCapacity, {
+            roleName: holiday.requiredRole,
+            requiredCount: Number(holiday.requiredCount),
+            hoursPerPerson: Number(holiday.hoursPerPerson),
+            manMonthFactor: Number(holiday.manMonthFactor),
+            updatedAt: holiday.updatedAt,
+            note: holiday.note
+          });
+          hasChanges = true;
+        }
+      } else {
+        capacities.push({
+          capacityId: `cap_${holiday.date.replace(/-/g, "_")}_${holiday.requiredRole.toLowerCase().replace(/\//g, "_")}`,
+          slotId,
+          roleName: holiday.requiredRole,
+          requiredCount: Number(holiday.requiredCount),
+          hoursPerPerson: Number(holiday.hoursPerPerson),
+          manMonthFactor: Number(holiday.manMonthFactor),
+          createdAt: holiday.createdAt,
+          updatedAt: holiday.updatedAt,
+          note: holiday.note
+        });
+        hasChanges = true;
+      }
+    });
+
+  if (hasChanges) {
+    await writeCSVTable("schedule_slots", scheduleSlots);
+    await writeCSVTable("slot_capacities", capacities);
+  }
+}
+
 // Taiga API helpers
 async function getAdminToken(forceRefresh = false) {
   if (cachedAdminToken && !forceRefresh) {
@@ -920,51 +1078,90 @@ async function handleApi(req, res, url) {
 
     if (req.method === "GET" && url.pathname === "/api/state") {
       const forceSync = url.searchParams.get("sync") === "true";
+      const month = url.searchParams.get("month") || dateKeyString(new Date()).slice(0, 7);
       if (forceSync || !existsSync(join(DB_DIR, "schedule_slots.csv"))) {
         await syncFromTaiga();
       }
+      await ensureMonthBackend(month);
       sendJson(res, 200, { ok: true, state: await loadLocalState() });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/state") {
+      return sendJson(res, 400, { ok: false, error: "POST /api/state is deprecated. Use specialized endpoints instead." });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/slots/register") {
       if (!session) {
         return sendJson(res, 401, { ok: false, error: "Unauthorized session." });
       }
-      const body = await readJson(req);
-      const incomingState = body.state || {};
-      const localState = await loadLocalState();
-
-      let memberships = await taigaFetch(`/memberships?project=${projectId}`);
-      if (incomingState.users) {
-        let membershipAdded = false;
-        for (const u of incomingState.users) {
-          const existsLocally = localState.users.some(existing => existing.email.toLowerCase() === u.email.toLowerCase());
-          if (!existsLocally && u.source === "admin_app") {
-            try {
-              const roleId = u.role === "ADMIN" ? 2884 : 2886;
-              await taigaFetch("/memberships", {
-                method: "POST",
-                body: JSON.stringify({
-                  project: projectId,
-                  role: roleId,
-                  email: u.email,
-                  username: u.username
-                })
-              });
-              console.log(`Successfully added user ${u.email} to Taiga project memberships.`);
-              u.source = "taiga";
-              membershipAdded = true;
-            } catch (err) {
-              console.warn(`Failed to add user ${u.email} to Taiga memberships (keeping local user cache):`, err.message);
-            }
-          }
-        }
-        if (membershipAdded) {
-          memberships = await taigaFetch(`/memberships?project=${projectId}`);
-        }
+      const { slotId, userEmail } = await readJson(req);
+      if (!slotId || !userEmail) {
+        return sendJson(res, 400, { ok: false, error: "Missing slotId or userEmail." });
       }
 
+      const localState = await loadLocalState();
+      const slot = localState.scheduleSlots.find(s => s.slotId === slotId);
+      const capacity = localState.capacities.find(c => c.slotId === slotId);
+      const user = localState.users.find(u => u.email.toLowerCase() === userEmail.toLowerCase());
+
+      if (!slot || !capacity || !user || user.status !== "ACTIVE") {
+        return sendJson(res, 400, { ok: false, error: "User hoặc slot không khả dụng." });
+      }
+
+      const registeredByEmail = session.email;
+      const isAdminUser = session.role === "ADMIN";
+
+      // Check validation
+      if (isPastDate(slot.date) && !isAdminUser) {
+        return sendJson(res, 400, { ok: false, error: "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request." });
+      }
+
+      if (remainingSlots(slot, capacity, localState.registrations) <= 0) {
+        return sendJson(res, 400, { ok: false, error: "Slot này đã đủ người đăng ký." });
+      }
+
+      if (!isAdminUser && findUserMonthlyRegistration(localState.registrations, localState.scheduleSlots, slot.month, userEmail)) {
+        return sendJson(res, 400, { ok: false, error: "Bạn đã đăng ký một ngày trực trong tháng này rồi." });
+      }
+
+      // 1. Add registration
+      const newRegId = `reg_${Date.now()}_${user.username.replace(/\./g, "_")}`;
+      const newReg = {
+        registrationId: newRegId,
+        slotId,
+        capacityId: capacity.capacityId,
+        userEmail: userEmail.toLowerCase(),
+        registeredByEmail: registeredByEmail.toLowerCase(),
+        status: "ACTIVE",
+        approvedStatus: registeredByEmail.toLowerCase() === userEmail.toLowerCase() ? "AUTO_APPROVED" : "ADMIN_APPROVED",
+        source: registeredByEmail.toLowerCase() === userEmail.toLowerCase() ? "self_registration" : "admin_assignment",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        note: ""
+      };
+      localState.registrations.push(newReg);
+
+      // 2. Refresh Slot Status
+      const activeRegs = localState.registrations.filter(r => r.slotId === slotId && r.status === "ACTIVE");
+      slot.status = Math.max(0, Number(capacity.requiredCount) - activeRegs.length) <= 0 ? "FULL" : "OPEN";
+      slot.updatedAt = new Date().toISOString();
+
+      // 3. Write Audit Log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: registeredByEmail,
+        action: "REGISTRATION_CREATE",
+        entityType: "registration",
+        entityId: slotId,
+        beforeJson: "",
+        afterJson: JSON.stringify({ slotId, userEmail }),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      // 4. Update Taiga
+      let memberships = await taigaFetch(`/memberships?project=${projectId}`);
       const emailToTaigaUserId = {};
       memberships.forEach(m => {
         const email = m.user_email || m.email;
@@ -973,256 +1170,619 @@ async function handleApi(req, res, url) {
         }
       });
 
-      // 1. Check for new registrations
-      for (const reg of incomingState.registrations || []) {
-        const isNew = !localState.registrations.some(r => r.registrationId === reg.registrationId);
-        if (isNew && reg.status === "ACTIVE") {
-          const slot = incomingState.scheduleSlots.find(s => s.slotId === reg.slotId);
-          if (slot) {
-            let taigaIssueId = slot.taigaIssueId;
-            if (!taigaIssueId) {
-              const existingLocalSlot = localState.scheduleSlots.find(s => s.date === slot.date && s.taigaIssueId);
-              if (existingLocalSlot) {
-                taigaIssueId = existingLocalSlot.taigaIssueId;
-                slot.taigaIssueId = taigaIssueId;
-              }
+      let taigaIssueId = slot.taigaIssueId;
+      if (!taigaIssueId) {
+        // Create the issue on Taiga (e.g. for auto-generated weekend slots)
+        const createdIssue = await taigaFetch("/issues", {
+          method: "POST",
+          body: JSON.stringify({
+            project: projectId,
+            subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
+            description: slot.note || "Auto-generated weekend slot",
+            assigned_to: emailToTaigaUserId[userEmail.toLowerCase()] || null
+          })
+        });
+        taigaIssueId = createdIssue.id;
+        slot.taigaIssueId = taigaIssueId;
+
+        const slotTypeAttrId = customAttrMap["slot_type"];
+        const hoursAttrId = customAttrMap["hours"];
+        const factorAttrId = customAttrMap["man_month_factor"];
+
+        await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            version: createdIssue.version || 1,
+            attributes_values: {
+              [slotTypeAttrId]: slot.slotType,
+              [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
+              [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
             }
-
-            if (!taigaIssueId) {
-              // Create the issue on Taiga (e.g. for auto-generated weekend slots)
-              const createdIssue = await taigaFetch("/issues", {
-                method: "POST",
-                body: JSON.stringify({
-                  project: projectId,
-                  subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
-                  description: slot.note || "Auto-generated weekend slot",
-                  assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
-                })
-              });
-              taigaIssueId = createdIssue.id;
-              slot.taigaIssueId = taigaIssueId;
-              
-              // Set custom attributes
-              const slotTypeAttrId = customAttrMap["slot_type"];
-              const hoursAttrId = customAttrMap["hours"];
-              const factorAttrId = customAttrMap["man_month_factor"];
-              
-              const capacity = incomingState.capacities.find(c => c.slotId === slot.slotId);
-              
-              await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
-                method: "PATCH",
-                body: JSON.stringify({
-                  version: createdIssue.version || 1,
-                  attributes_values: {
-                    [slotTypeAttrId]: slot.slotType,
-                    [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
-                    [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
-                  }
-                })
-              });
-            } else {
-              // Update assignee for existing issue
-              let existingIssue = null;
-              try {
-                existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
-              } catch (err) {
-                if (err.message.includes("404")) {
-                  taigaIssueId = null;
-                  slot.taigaIssueId = "";
-                } else {
-                  throw err;
-                }
-              }
-
-              if (!taigaIssueId) {
-                const createdIssue = await taigaFetch("/issues", {
-                  method: "POST",
-                  body: JSON.stringify({
-                    project: projectId,
-                    subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
-                    description: slot.note || "Auto-generated weekend slot",
-                    assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
-                  })
-                });
-                taigaIssueId = createdIssue.id;
-                slot.taigaIssueId = taigaIssueId;
-
-                const slotTypeAttrId = customAttrMap["slot_type"];
-                const hoursAttrId = customAttrMap["hours"];
-                const factorAttrId = customAttrMap["man_month_factor"];
-                const capacity = incomingState.capacities.find(c => c.slotId === slot.slotId);
-
-                await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
-                  method: "PATCH",
-                  body: JSON.stringify({
-                    version: createdIssue.version || 1,
-                    attributes_values: {
-                      [slotTypeAttrId]: slot.slotType,
-                      [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
-                      [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
-                    }
-                  })
-                });
-              } else {
-                await taigaFetch(`/issues/${taigaIssueId}`, {
-                  method: "PATCH",
-                  body: JSON.stringify({
-                    version: existingIssue.version,
-                    assigned_to: emailToTaigaUserId[reg.userEmail.toLowerCase()] || null
-                  })
-                });
-              }
-            }
-            
-            // Add comment
-            if (taigaIssueId) {
-              await addTaigaComment(taigaIssueId, `[REGISTRATION] Registered by ${reg.userEmail}`);
-            }
-
-            // Send Google Chat Alert! (disabled to avoid spam)
-            // const dateStr = formatDisplayDate(slot.date);
-            // sendGoogleChatMessage(`🔔 *Đăng ký trực mới*\n👤 Thành viên: *${reg.userEmail}*\n📅 Ngày trực: *${dateStr}*\n📝 Ca trực: *${slot.title}*`);
+          })
+        });
+      } else {
+        // Update assignee for existing issue
+        let existingIssue = null;
+        try {
+          existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
+        } catch (err) {
+          if (err.message.includes("404")) {
+            taigaIssueId = null;
+          } else {
+            throw err;
           }
         }
-      }
 
-      // 2. Check for cancelled registrations
-      for (const reg of incomingState.registrations || []) {
-        const oldReg = localState.registrations.find(r => r.registrationId === reg.registrationId);
-        if (oldReg && oldReg.status === "ACTIVE" && reg.status === "CANCELLED") {
-          const slot = incomingState.scheduleSlots.find(s => s.slotId === reg.slotId);
-          if (slot && slot.taigaIssueId) {
-            let existingIssue = null;
-            try {
-              existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
-            } catch (err) {
-              if (err.message.includes("404")) {
-                slot.taigaIssueId = "";
-              } else {
-                throw err;
-              }
-            }
-
-            if (existingIssue) {
-              await taigaFetch(`/issues/${slot.taigaIssueId}`, {
-                method: "PATCH",
-                body: JSON.stringify({
-                  version: existingIssue.version,
-                  assigned_to: null,
-                  comment: `[REGISTRATION] Cancelled by ${session.email}`
-                })
-              });
-            }
-
-            // Send Google Chat Alert! (disabled to avoid spam)
-            // const dateStr = formatDisplayDate(slot.date);
-            // sendGoogleChatMessage(`⚠️ *Hủy đăng ký trực*\n👤 Thành viên: *${oldReg.userEmail}*\n📅 Ngày trực: *${dateStr}*\n📝 Ca trực: *${slot.title}*`);
-          }
-        }
-      }
-
-      // 3. Check for new holiday settings (which translates to new slots)
-      for (const holiday of incomingState.holidaySettings || []) {
-        const isNew = !localState.holidaySettings.some(h => h.holidayId === holiday.holidayId);
-        if (isNew) {
+        if (!taigaIssueId) {
           const createdIssue = await taigaFetch("/issues", {
             method: "POST",
             body: JSON.stringify({
               project: projectId,
-              subject: `[OT-SLOT] ${holiday.date} | ${holiday.name}`,
-              description: holiday.note || "Holiday slot"
+              subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
+              description: slot.note || "Auto-generated weekend slot",
+              assigned_to: emailToTaigaUserId[userEmail.toLowerCase()] || null
             })
           });
-          
+          taigaIssueId = createdIssue.id;
+          slot.taigaIssueId = taigaIssueId;
+
           const slotTypeAttrId = customAttrMap["slot_type"];
           const hoursAttrId = customAttrMap["hours"];
           const factorAttrId = customAttrMap["man_month_factor"];
 
-          await taigaFetch(`/issues/custom-attributes-values/${createdIssue.id}`, {
+          await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
             method: "PATCH",
             body: JSON.stringify({
               version: createdIssue.version || 1,
               attributes_values: {
-                [slotTypeAttrId]: holiday.holidayType,
-                [hoursAttrId]: String(holiday.hoursPerPerson || 8),
-                [factorAttrId]: String(holiday.manMonthFactor || 1)
+                [slotTypeAttrId]: slot.slotType,
+                [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
+                [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
               }
             })
           });
-          
-          const slot = incomingState.scheduleSlots.find(s => s.date === holiday.date);
-          if (slot) slot.taigaIssueId = createdIssue.id;
+        } else {
+          await taigaFetch(`/issues/${taigaIssueId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              version: existingIssue.version,
+              assigned_to: emailToTaigaUserId[userEmail.toLowerCase()] || null
+            })
+          });
         }
       }
 
-      // 4. Check for update requests (submitted as comments)
-      for (const reqObj of incomingState.updateRequests || []) {
-        const oldReq = localState.updateRequests.find(r => r.requestId === reqObj.requestId);
-        
-        // New Update Request
-        if (!oldReq) {
-          const slot = incomingState.scheduleSlots.find(s => s.date === reqObj.targetDate);
-          if (slot && slot.taigaIssueId) {
-            try {
-              await addTaigaComment(slot.taigaIssueId, `[UPDATE-REQUEST]\nHours: ${reqObj.requestedHours}\nReason: ${reqObj.reason}\nEvidence: ${reqObj.evidenceUrl || ""}\nStatus: PENDING`);
-            } catch (err) {
-              if (err.message.includes("404")) {
-                slot.taigaIssueId = "";
-              } else {
-                throw err;
-              }
-            }
+      if (taigaIssueId) {
+        await addTaigaComment(taigaIssueId, `[REGISTRATION] Registered by ${userEmail}`);
+      }
 
-            // Send Google Chat Alert!
-            const dateStr = formatDisplayDate(reqObj.targetDate);
-            sendGoogleChatMessage(`📝 *Yêu cầu cập nhật giờ trực mới*\n👤 Thành viên: *${reqObj.userEmail}*\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ thực tế: *${reqObj.requestedHours}h*\n💬 Lý do: ${reqObj.reason}`);
+      // Save State
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/slots/cancel") {
+      if (!session) {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized session." });
+      }
+      const { registrationId } = await readJson(req);
+      if (!registrationId) {
+        return sendJson(res, 400, { ok: false, error: "Missing registrationId." });
+      }
+
+      const localState = await loadLocalState();
+      const registration = localState.registrations.find(r => r.registrationId === registrationId);
+      if (!registration) {
+        return sendJson(res, 404, { ok: false, error: "Không tìm thấy đăng ký." });
+      }
+
+      const slot = localState.scheduleSlots.find(s => s.slotId === registration.slotId);
+      const capacity = localState.capacities.find(c => c.slotId === registration.slotId);
+      const isAdminUser = session.role === "ADMIN";
+
+      if (slot && isPastDate(slot.date) && !isAdminUser) {
+        return sendJson(res, 400, { ok: false, error: "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request." });
+      }
+
+      if (!isAdminUser && registration.userEmail.toLowerCase() !== session.email.toLowerCase()) {
+        return sendJson(res, 403, { ok: false, error: "Bạn chỉ có thể hủy đăng ký của chính mình." });
+      }
+
+      // Update registration status
+      const before = JSON.stringify(registration);
+      registration.status = "CANCELLED";
+      registration.updatedAt = new Date().toISOString();
+
+      // Refresh slot status
+      if (slot && capacity) {
+        const activeRegs = localState.registrations.filter(r => r.slotId === slot.slotId && r.status === "ACTIVE");
+        slot.status = Math.max(0, Number(capacity.requiredCount) - activeRegs.length) <= 0 ? "FULL" : "OPEN";
+        slot.updatedAt = new Date().toISOString();
+      }
+
+      // Add audit log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "REGISTRATION_CANCEL",
+        entityType: "registration",
+        entityId: registrationId,
+        beforeJson: before,
+        afterJson: JSON.stringify(registration),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      // Update Taiga
+      if (slot && slot.taigaIssueId) {
+        let existingIssue = null;
+        try {
+          existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
+        } catch (err) {
+          if (err.message.includes("404")) {
+            slot.taigaIssueId = "";
+          } else {
+            throw err;
           }
         }
-        
-        // Admin reviewed request
-        if (oldReq && oldReq.status === "PENDING" && reqObj.status !== "PENDING") {
-          const slot = incomingState.scheduleSlots.find(s => s.date === reqObj.targetDate);
-          if (slot && slot.taigaIssueId) {
-            let customAttrs = null;
-            try {
-              customAttrs = await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`);
-            } catch (err) {
-              if (err.message.includes("404")) {
-                slot.taigaIssueId = "";
-              } else {
-                throw err;
-              }
-            }
 
-            if (customAttrs) {
-              if (reqObj.status === "APPROVED") {
-                const hoursAttrId = customAttrMap["hours"];
-                await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`, {
-                  method: "PATCH",
-                  body: JSON.stringify({
-                    version: customAttrs.version,
-                    attributes_values: {
-                      [hoursAttrId]: String(reqObj.requestedHours)
-                    }
-                  })
-                });
-                await addTaigaComment(slot.taigaIssueId, `[UPDATE-APPROVED] Approved by ${session.username}`);
-              } else {
-                await addTaigaComment(slot.taigaIssueId, `[UPDATE-REJECTED] Rejected by ${session.username}`);
-              }
-            }
+        if (existingIssue) {
+          await taigaFetch(`/issues/${slot.taigaIssueId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              version: existingIssue.version,
+              assigned_to: null,
+              comment: `[REGISTRATION] Cancelled by ${session.email}`
+            })
+          });
+        }
+      }
 
-            // Send Google Chat Alert!
-            const dateStr = formatDisplayDate(reqObj.targetDate);
-            const statusText = reqObj.status === "APPROVED" ? "✅ Đã phê duyệt" : "❌ Từ chối";
-            sendGoogleChatMessage(`🔔 *Kết quả duyệt yêu cầu cập nhật giờ*\n👤 Thành viên: *${reqObj.userEmail}*\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ: *${reqObj.requestedHours}h*\n📋 Trạng thái: *${statusText}*\n👤 Người duyệt: *${session.email}*`);
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/update-requests/create") {
+      if (!session) {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized session." });
+      }
+      const data = await readJson(req);
+      const { targetDate, requestedHours, reason, evidenceUrl } = data;
+      if (!targetDate || !requestedHours || !reason) {
+        return sendJson(res, 400, { ok: false, error: "Missing required fields." });
+      }
+
+      const localState = await loadLocalState();
+      
+      const newReq = {
+        requestId: `req_${Date.now()}`,
+        userEmail: session.email.toLowerCase(),
+        targetRegistrationId: "",
+        targetDate,
+        requestedHours: Number(requestedHours),
+        reason,
+        evidenceUrl: evidenceUrl || "",
+        status: "PENDING",
+        adminNote: "",
+        reviewedBy: "",
+        createdAt: new Date().toISOString(),
+        reviewedAt: ""
+      };
+      localState.updateRequests.push(newReq);
+
+      // Audit Log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "UPDATE_REQUEST_CREATE",
+        entityType: "update_request",
+        entityId: targetDate,
+        beforeJson: "",
+        afterJson: JSON.stringify(data),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      // Sync to Taiga comment
+      const slot = localState.scheduleSlots.find(s => s.date === targetDate);
+      if (slot && slot.taigaIssueId) {
+        try {
+          await addTaigaComment(slot.taigaIssueId, `[UPDATE-REQUEST]\nHours: ${requestedHours}\nReason: ${reason}\nEvidence: ${evidenceUrl || ""}\nStatus: PENDING`);
+        } catch (err) {
+          if (err.message.includes("404")) {
+            slot.taigaIssueId = "";
+          } else {
+            throw err;
           }
         }
       }
 
-      await saveLocalState(incomingState);
-      sendJson(res, 200, { ok: true, state: await loadLocalState() });
-      return;
+      // Send Chat Alert
+      const dateStr = formatDisplayDate(targetDate);
+      await sendGoogleChatMessage(`📝 *Yêu cầu cập nhật giờ trực mới*\n👤 Thành viên: *${session.email}*\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ thực tế: *${requestedHours}h*\n💬 Lý do: ${reason}`);
+
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/update-requests/review") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      const { requestId, status } = await readJson(req);
+      if (!requestId || !status) {
+        return sendJson(res, 400, { ok: false, error: "Missing requestId or status." });
+      }
+
+      const localState = await loadLocalState();
+      const requestObj = localState.updateRequests.find(r => r.requestId === requestId);
+      if (!requestObj) {
+        return sendJson(res, 404, { ok: false, error: "Request not found." });
+      }
+
+      if (requestObj.status !== "PENDING") {
+        return sendJson(res, 400, { ok: false, error: "Request has already been reviewed." });
+      }
+
+      const before = JSON.stringify(requestObj);
+      requestObj.status = status;
+      requestObj.reviewedBy = session.email;
+      requestObj.reviewedAt = new Date().toISOString();
+
+      // Audit Log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: `UPDATE_REQUEST_${status}`,
+        entityType: "update_request",
+        entityId: requestId,
+        beforeJson: before,
+        afterJson: JSON.stringify(requestObj),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      // Cập nhật Taiga
+      const slot = localState.scheduleSlots.find(s => s.date === requestObj.targetDate);
+      if (slot && slot.taigaIssueId) {
+        let customAttrs = null;
+        try {
+          customAttrs = await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`);
+        } catch (err) {
+          if (err.message.includes("404")) {
+            slot.taigaIssueId = "";
+          } else {
+            throw err;
+          }
+        }
+
+        if (customAttrs) {
+          if (status === "APPROVED") {
+            const hoursAttrId = customAttrMap["hours"];
+            await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                version: customAttrs.version,
+                attributes_values: {
+                  [hoursAttrId]: String(requestObj.requestedHours)
+                }
+              })
+            });
+            await addTaigaComment(slot.taigaIssueId, `[UPDATE-APPROVED] Approved by ${session.username || session.email.split("@")[0]}`);
+          } else {
+            await addTaigaComment(slot.taigaIssueId, `[UPDATE-REJECTED] Rejected by ${session.username || session.email.split("@")[0]}`);
+          }
+        }
+      }
+
+      // Send Chat Alert
+      const dateStr = formatDisplayDate(requestObj.targetDate);
+      const statusText = status === "APPROVED" ? "✅ Đã phê duyệt" : "❌ Từ chối";
+      await sendGoogleChatMessage(`🔔 *Kết quả duyệt yêu cầu cập nhật giờ*\n👤 Thành viên: *${requestObj.userEmail}*\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ: *${requestObj.requestedHours}h*\n📋 Trạng thái: *${statusText}*\n👤 Người duyệt: *${session.email}*`);
+
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/users/add") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      const data = await readJson(req);
+      const { email, displayName, role } = data;
+      if (!email || !displayName || !role) {
+        return sendJson(res, 400, { ok: false, error: "Missing required fields." });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const domain = await getSettingValue("company_domain", "kyanon.digital");
+      if (!normalizedEmail.endsWith(`@${domain}`)) {
+        return sendJson(res, 400, { ok: false, error: `Email must use @${domain}.` });
+      }
+
+      const localState = await loadLocalState();
+      if (localState.users.some(u => u.email.toLowerCase() === normalizedEmail)) {
+        return sendJson(res, 400, { ok: false, error: "Email already exists in users sheet." });
+      }
+
+      const username = normalizedEmail.split("@")[0];
+      const newUser = {
+        userId: `usr_${username.replace(/\./g, "_")}`,
+        email: normalizedEmail,
+        username,
+        displayName: displayName.trim(),
+        role,
+        status: "ACTIVE",
+        source: "admin_app",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      // Add membership to Taiga
+      try {
+        const roleId = role === "ADMIN" ? 2884 : 2886;
+        await taigaFetch("/memberships", {
+          method: "POST",
+          body: JSON.stringify({
+            project: projectId,
+            role: roleId,
+            email: normalizedEmail,
+            username: username
+          })
+        });
+        console.log(`Successfully added user ${normalizedEmail} to Taiga project memberships.`);
+        newUser.source = "taiga";
+      } catch (err) {
+        console.warn(`Failed to add user ${normalizedEmail} to Taiga memberships (keeping local user cache):`, err.message);
+      }
+
+      localState.users.push(newUser);
+
+      // Audit Log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "USER_CREATE",
+        entityType: "user",
+        entityId: normalizedEmail,
+        beforeJson: "",
+        afterJson: JSON.stringify(newUser),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/users/status") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      const { email, status } = await readJson(req);
+      if (!email || !status) {
+        return sendJson(res, 400, { ok: false, error: "Missing email or status." });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const adminEmailFromDb = await getSettingValue("admin_email", "hau.nt@kyanon.digital");
+      if (normalizedEmail === adminEmailFromDb.toLowerCase()) {
+        return sendJson(res, 400, { ok: false, error: "Cannot change protected admin status." });
+      }
+
+      const localState = await loadLocalState();
+      const user = localState.users.find(u => u.email.toLowerCase() === normalizedEmail);
+      if (!user) {
+        return sendJson(res, 404, { ok: false, error: "User not found." });
+      }
+
+      const before = JSON.stringify(user);
+      user.status = status;
+      user.updatedAt = new Date().toISOString();
+
+      // Audit Log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: `USER_${status}`,
+        entityType: "user",
+        entityId: normalizedEmail,
+        beforeJson: before,
+        afterJson: JSON.stringify(user),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/holidays/create") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      const data = await readJson(req);
+      const { startDate, endDate, name, holidayType, requiredRole, requiredCount, hoursPerPerson, manMonthFactor, note } = data;
+      if (!startDate || !endDate || !name || !holidayType) {
+        return sendJson(res, 400, { ok: false, error: "Missing required fields." });
+      }
+
+      const start = parseLocalDate(startDate);
+      const end = parseLocalDate(endDate);
+      if (end < start) {
+        return sendJson(res, 400, { ok: false, error: "End date must be after or equal to start date." });
+      }
+
+      const localState = await loadLocalState();
+      const createdDates = [];
+      const cursor = new Date(start);
+
+      while (cursor <= end) {
+        const dateStr = dateKeyString(cursor);
+        const [year, monthIndex] = dateStr.split("-").map(Number);
+        const month = `${year}-${String(monthIndex).padStart(2, "0")}`;
+        const dayOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][cursor.getDay()];
+
+        const existingHoliday = localState.holidaySettings.find(h => h.date === dateStr);
+        const payload = {
+          holidayId: `hol_${dateStr.replace(/-/g, "_")}`,
+          date: dateStr,
+          name,
+          holidayType,
+          requiredRole: requiredRole || "QC/PO",
+          requiredCount: Number(requiredCount) || 1,
+          hoursPerPerson: Number(hoursPerPerson) || 8,
+          manMonthFactor: Number(manMonthFactor) || 1,
+          note: note || "",
+          createdBy: session.email,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+
+        if (existingHoliday) {
+          Object.assign(existingHoliday, {
+            name: payload.name,
+            holidayType: payload.holidayType,
+            requiredRole: payload.requiredRole,
+            requiredCount: payload.requiredCount,
+            hoursPerPerson: payload.hoursPerPerson,
+            manMonthFactor: payload.manMonthFactor,
+            note: payload.note,
+            updatedAt: payload.updatedAt
+          });
+        } else {
+          localState.holidaySettings.push(payload);
+        }
+
+        // Merge to schedule slots
+        const slotId = `slot_${dateStr.replace(/-/g, "_")}`;
+        const existingSlot = localState.scheduleSlots.find(s => s.date === dateStr);
+        let taigaIssueId = existingSlot ? existingSlot.taigaIssueId : "";
+
+        // Create issue on Taiga for holiday if not exists
+        if (!taigaIssueId) {
+          try {
+            const createdIssue = await taigaFetch("/issues", {
+              method: "POST",
+              body: JSON.stringify({
+                project: projectId,
+                subject: `[OT-SLOT] ${dateStr} | ${name}`,
+                description: note || "Holiday slot"
+              })
+            });
+            taigaIssueId = createdIssue.id;
+
+            const slotTypeAttrId = customAttrMap["slot_type"];
+            const hoursAttrId = customAttrMap["hours"];
+            const factorAttrId = customAttrMap["man_month_factor"];
+
+            await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                version: createdIssue.version || 1,
+                attributes_values: {
+                  [slotTypeAttrId]: holidayType,
+                  [hoursAttrId]: String(hoursPerPerson || 8),
+                  [factorAttrId]: String(manMonthFactor || 1)
+                }
+              })
+            });
+          } catch (err) {
+            console.warn(`Failed to create Taiga issue for holiday ${dateStr}:`, err.message);
+          }
+        } else {
+          // Update Taiga issue attributes
+          try {
+            const existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
+            const slotTypeAttrId = customAttrMap["slot_type"];
+            const hoursAttrId = customAttrMap["hours"];
+            const factorAttrId = customAttrMap["man_month_factor"];
+
+            const customAttrs = await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`);
+
+            await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
+              method: "PATCH",
+              body: JSON.stringify({
+                version: customAttrs.version || 1,
+                attributes_values: {
+                  [slotTypeAttrId]: holidayType,
+                  [hoursAttrId]: String(hoursPerPerson || 8),
+                  [factorAttrId]: String(manMonthFactor || 1)
+                }
+              })
+            });
+          } catch (err) {
+            console.warn(`Failed to update Taiga attributes for holiday ${dateStr}:`, err.message);
+          }
+        }
+
+        if (existingSlot) {
+          existingSlot.slotType = holidayType;
+          existingSlot.title = name;
+          existingSlot.note = note || "";
+          existingSlot.taigaIssueId = taigaIssueId;
+          existingSlot.updatedAt = new Date().toISOString();
+        } else {
+          localState.scheduleSlots.push({
+            slotId,
+            date: dateStr,
+            month,
+            dayOfWeek,
+            slotType: holidayType,
+            title: name,
+            status: "OPEN",
+            createdBy: session.email,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            note: note || "",
+            taigaIssueId
+          });
+        }
+
+        // Add or Update capacities
+        const existingCapacity = localState.capacities.find(c => c.slotId === slotId);
+        if (existingCapacity) {
+          Object.assign(existingCapacity, {
+            roleName: requiredRole || "QC/PO",
+            requiredCount: Number(requiredCount) || 1,
+            hoursPerPerson: Number(hoursPerPerson) || 8,
+            manMonthFactor: Number(manMonthFactor) || 1,
+            updatedAt: new Date().toISOString(),
+            note: note || ""
+          });
+        } else {
+          localState.capacities.push({
+            capacityId: `cap_${dateStr.replace(/-/g, "_")}_${(requiredRole || "QC/PO").toLowerCase().replace(/\//g, "_")}`,
+            slotId,
+            roleName: requiredRole || "QC/PO",
+            requiredCount: Number(requiredCount) || 1,
+            hoursPerPerson: Number(hoursPerPerson) || 8,
+            manMonthFactor: Number(manMonthFactor) || 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            note: note || ""
+          });
+        }
+
+        createdDates.push(dateStr);
+        cursor.setDate(cursor.getDate() + 1);
+      }
+
+      // Audit Log
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "HOLIDAY_DURATION_CREATE",
+        entityType: "holiday_setting",
+        entityId: `${startDate}_${endDate}`,
+        beforeJson: "",
+        afterJson: JSON.stringify({ ...data, dates: createdDates }),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+
+      await saveLocalState(localState);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
     }
 
     if (req.method === "GET" && url.pathname === "/api/export") {
