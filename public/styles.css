@@ -500,14 +500,14 @@ th {
   font-weight: 750;
 }
 
-.status.open,
+.status.full,
 .status.active,
 .status.approved {
   color: #116149;
   background: var(--green-soft);
 }
 
-.status.full,
+.status.open,
 .status.pending {
   color: #8b5000;
   background: var(--amber-soft);
