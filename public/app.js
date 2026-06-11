@@ -68,7 +68,7 @@ async function loadStateFromDb(sync = false, month = selectedMonth, isPolling = 
     if (sync) url += "&sync=true";
     const response = await fetch(url, { cache: "no-store" });
     const payload = await response.json();
-    if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot load Google Sheets DB.");
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot load database.");
     state = {
       ...emptyState(),
       ...payload.state
@@ -286,8 +286,8 @@ function render() {
     app.innerHTML = `
       <div class="login-panel" style="min-height:100vh">
         <div class="login-box">
-          <h2>Loading Google Sheets DB</h2>
-          <p class="muted">Đang đọc dữ liệu từ OT Support Tool DB.</p>
+          <h2>Loading OT Support Database</h2>
+          <p class="muted">Đang tải dữ liệu từ Taiga và Cơ sở dữ liệu...</p>
         </div>
       </div>
     `;
@@ -298,9 +298,9 @@ function render() {
     app.innerHTML = `
       <div class="login-panel" style="min-height:100vh">
         <div class="login-box">
-          <h2>Google Sheets DB chưa kết nối</h2>
+          <h2>Cơ sở dữ liệu chưa kết nối</h2>
           <div class="error">${escapeHtml(bootstrapError)}</div>
-          <p class="muted">Tạo file <strong>.env.local</strong> từ <strong>.env.local.example</strong>, share Google Sheet DB cho service account với quyền Editor, rồi restart local server.</p>
+          <p class="muted">Không thể tải dữ liệu. Hãy kiểm tra kết nối mạng hoặc cấu hình API Taiga trong file <strong>.env</strong>, sau đó khởi động lại server.</p>
           <button class="btn primary" data-action="retry-bootstrap">Retry</button>
         </div>
       </div>
@@ -341,7 +341,7 @@ function render() {
           ${navItems.map(([key, label]) => `<button class="${view === key ? "active" : ""}" data-nav="${key}">${label}</button>`).join("")}
         </nav>
         <div class="sidebar-footer">
-          Google Sheets DB<br />
+          Taiga & Local DB<br />
           kyanon.digital only
         </div>
       </aside>
@@ -349,7 +349,7 @@ function render() {
         <header class="topbar">
           <h1 class="page-title">${pageTitle()}</h1>
           <div class="user-menu">
-            <span class="status info">${escapeHtml(saveStatus || "Google Sheets DB")}</span>
+            <span class="status info">${escapeHtml(saveStatus || "Synced with Taiga")}</span>
             <div>
               <strong>${escapeHtml(user.displayName)}</strong>
               <div class="muted">${escapeHtml(user.email)}</div>
@@ -952,7 +952,7 @@ function renderAdminUsers() {
             </div>
             <button class="btn primary" type="submit">Add user</button>
           </form>
-          <div class="notice" style="margin-top:14px">Thao tác này sẽ cập nhật tab <strong>users</strong> trong Google Sheets DB.</div>
+          <div class="notice" style="margin-top:14px">Thao tác này sẽ cập nhật trực tiếp danh sách thành viên trên local DB và Taiga.</div>
         </div>
       </section>
     </div>
