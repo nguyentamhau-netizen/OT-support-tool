@@ -1,0 +1,29 @@
+name: Google Chat Duty Reminder (Render Wakeup & Trigger)
+
+on:
+  schedule:
+    # 17:00 chiều Thứ Sáu Việt Nam (GMT+7) = 10:00 sáng Thứ Sáu UTC (GMT+0)
+    - cron: '0 10 * * 5'
+  
+  # Cho phép kích hoạt thủ công từ giao diện GitHub để test
+  workflow_dispatch:
+
+jobs:
+  trigger-render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake up Render Service
+        run: |
+          echo "Đang đánh thức server Render..."
+          curl -s -o /dev/null --max-time 60 "${{ secrets.RENDER_APP_URL }}/api/health" || true
+
+      - name: Wait for Render to fully spin up
+        run: sleep 60
+
+      - name: Trigger Render Cron API
+        run: |
+          echo "Đang gọi API gửi tin nhắn nhắc lịch..."
+          curl -f -X POST \
+            -H "Content-Type: application/json" \
+            -H "x-cron-token: ${{ secrets.CRON_TOKEN }}" \
+            "${{ secrets.RENDER_APP_URL }}/api/chat/trigger-reminders"
