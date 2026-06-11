@@ -266,9 +266,14 @@ function formatDisplayDate(dateStr) {
   return dateStr;
 }
 
+const isAfternoonShift = (title) => {
+  const t = (title || "").toLowerCase();
+  return t.includes("chiều") || t.includes("chieu") || t.includes("afternoon") || t.includes("pm");
+};
+
 async function sendUpcomingReminders(targetDateStr) {
   const localState = await loadLocalState();
-  const slots = (localState.scheduleSlots || []).filter(s => s.date === targetDateStr);
+  const slots = (localState.scheduleSlots || []).filter(s => s.date === targetDateStr && !isAfternoonShift(s.title));
   if (!slots.length) return { sentCount: 0, openCount: 0 };
 
   let sentCount = 0;
@@ -321,8 +326,8 @@ async function sendUpcomingReminders(targetDateStr) {
 
 async function sendWeekendReminders(saturdayStr, sundayStr) {
   const localState = await loadLocalState();
-  const satSlots = (localState.scheduleSlots || []).filter(s => s.date === saturdayStr);
-  const sunSlots = (localState.scheduleSlots || []).filter(s => s.date === sundayStr);
+  const satSlots = (localState.scheduleSlots || []).filter(s => s.date === saturdayStr && !isAfternoonShift(s.title));
+  const sunSlots = (localState.scheduleSlots || []).filter(s => s.date === sundayStr && !isAfternoonShift(s.title));
 
   // Check if a weekend reminder was already sent in the last 12 hours to prevent duplicate triggers
   const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
