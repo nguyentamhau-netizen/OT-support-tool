@@ -324,6 +324,18 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   const satSlots = (localState.scheduleSlots || []).filter(s => s.date === saturdayStr);
   const sunSlots = (localState.scheduleSlots || []).filter(s => s.date === sundayStr);
 
+  // Check if a weekend reminder was already sent in the last 12 hours to prevent duplicate triggers
+  const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+  const alreadySent = (localState.chatNotifications || []).some(n => 
+    (satSlots.some(s => s.slotId === n.slotId) || sunSlots.some(s => s.slotId === n.slotId)) && 
+    n.status === "SENT" && 
+    n.sentAt >= twelveHoursAgo
+  );
+  if (alreadySent) {
+    console.log("[BACKGROUND-JOB] Weekend reminder already sent in the last 12 hours. Skipping duplicate.");
+    return { ok: true, skipped: true };
+  }
+
   const satDisplay = formatDisplayDate(saturdayStr);
   const sunDisplay = formatDisplayDate(sundayStr);
 
