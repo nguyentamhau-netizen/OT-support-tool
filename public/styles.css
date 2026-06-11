@@ -446,11 +446,13 @@ textarea {
 }
 
 .slot-name {
+  display: block;
   font-size: 12px;
   font-weight: 750;
 }
 
 .slot-meta {
+  display: block;
   color: var(--muted);
   font-size: 12px;
   margin-top: 2px;
