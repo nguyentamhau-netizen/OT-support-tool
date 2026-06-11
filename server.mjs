@@ -980,8 +980,8 @@ async function saveLocalState(state) {
 
 async function handleExcelExport(req, res, url) {
   const month = url.searchParams.get("month");
-  if (!month) {
-    return sendJson(res, 400, { ok: false, error: "Missing month parameter." });
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    return sendJson(res, 400, { ok: false, error: "Missing or invalid month parameter. Format: YYYY-MM" });
   }
 
   try {
@@ -990,29 +990,108 @@ async function handleExcelExport(req, res, url) {
     const templatePath = join(process.cwd(), "templates", "AMAZE _ Time log - Overtime - 2026.xlsx");
     await workbook.xlsx.readFile(templatePath);
 
-    const worksheet = workbook.getWorksheet("Apr-May2026") || workbook.worksheets[0];
     const localState = await loadLocalState();
 
-    const activeRegistrations = localState.registrations.filter(reg => {
-      const slot = localState.scheduleSlots.find(s => s.slotId === reg.slotId);
-      return reg.status === "ACTIVE" && slot && slot.month === month;
+    const [year, monthVal] = month.split("-");
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const shortMonth = monthNames[parseInt(monthVal, 10) - 1] || "Month";
+    const sheetName = `${shortMonth}${year}`;
+
+    // Get slots of this month
+    const slots = localState.scheduleSlots
+      .filter(s => s.month === month)
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    // Get active users
+    const activeUsers = localState.users
+      .filter(u => u.status === "ACTIVE")
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+
+    let worksheet = workbook.getWorksheet(sheetName);
+    if (worksheet) {
+      workbook.removeWorksheet(sheetName);
+    }
+    worksheet = workbook.addWorksheet(sheetName);
+    worksheet.views = [{ showGridLines: true }];
+
+    // Row 1: Totals
+    worksheet.getRow(1).getCell(1).value = "Total (man-days)";
+    worksheet.getRow(1).getCell(1).font = { name: "Arial", size: 10, bold: true };
+
+    // Row 2: Headers
+    worksheet.getRow(2).getCell(1).value = "Date";
+    worksheet.getRow(2).getCell(1).font = { name: "Arial", size: 10, bold: true };
+    worksheet.getRow(2).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+
+    activeUsers.forEach((user, idx) => {
+      const colNum = idx + 2;
+      // Row 2 cell
+      const cellHeader = worksheet.getRow(2).getCell(colNum);
+      cellHeader.value = user.username;
+      cellHeader.font = { name: "Arial", size: 10, bold: true };
+      cellHeader.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFD0E0E3" },
+        bgColor: { argb: "FFD0E0E3" }
+      };
+      cellHeader.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+
+      // Row 1 cell (SUM Formula)
+      const cellTotal = worksheet.getRow(1).getCell(colNum);
+      const colLetter = worksheet.getColumn(colNum).letter;
+      cellTotal.value = {
+        formula: `SUM(${colLetter}3:${colLetter}${slots.length + 2})`,
+        result: 0
+      };
+      cellTotal.font = { name: "Arial", size: 10, bold: true };
+      cellTotal.numFmt = "#,##0.0";
     });
 
-    let startRow = 10;
-    activeRegistrations.forEach((reg, index) => {
-      const slot = localState.scheduleSlots.find(s => s.slotId === reg.slotId);
-      const capacity = localState.capacities.find(c => c.capacityId === reg.capacityId);
-      const user = localState.users.find(u => u.email.toLowerCase() === reg.userEmail.toLowerCase());
-      
-      const row = worksheet.getRow(startRow + index);
-      row.getCell('A').value = index + 1;
-      row.getCell('B').value = user ? user.displayName : reg.userEmail;
-      row.getCell('C').value = slot.date;
-      row.getCell('D').value = slot.dayOfWeek;
-      row.getCell('E').value = slot.title;
-      row.getCell('F').value = capacity ? capacity.hoursPerPerson : 8;
-      row.getCell('G').value = "Support SOS Amaze project";
-      row.commit();
+    // Write Data rows
+    slots.forEach((slot, sIdx) => {
+      const rowNum = sIdx + 3;
+      const row = worksheet.getRow(rowNum);
+
+      // Col 1: Date
+      const cellDate = row.getCell(1);
+      const parts = slot.date.split("-").map(Number);
+      cellDate.value = new Date(parts[0], parts[1] - 1, parts[2]);
+      cellDate.font = { name: "Arial", size: 10 };
+      cellDate.alignment = { horizontal: "right", vertical: "middle" };
+      cellDate.numFmt = "ddd, mmm dd, yyyy";
+
+      activeUsers.forEach((user, uIdx) => {
+        const colNum = uIdx + 2;
+        const cellVal = row.getCell(colNum);
+
+        // Find registration
+        const reg = localState.registrations.find(r => 
+          r.slotId === slot.slotId && 
+          r.userEmail.toLowerCase() === user.email.toLowerCase() && 
+          r.status === "ACTIVE"
+        );
+
+        if (reg) {
+          // Rule: Default factor is always 0.5 in report export
+          cellVal.value = 0.5;
+          cellVal.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFF0000" } };
+          cellVal.fill = {
+            type: "pattern",
+            pattern: "solid",
+            fgColor: { argb: "FFFFFF00" },
+            bgColor: { argb: "FFFFFF00" }
+          };
+          cellVal.alignment = { horizontal: "center", vertical: "middle" };
+          cellVal.numFmt = "#,##0.0";
+        }
+      });
+    });
+
+    // Autofit widths
+    worksheet.getColumn(1).width = 20;
+    activeUsers.forEach((_, idx) => {
+      worksheet.getColumn(idx + 2).width = 14;
     });
 
     res.writeHead(200, {
