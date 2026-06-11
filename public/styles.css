@@ -867,4 +867,9 @@ th {
   border-left: 4px solid var(--blue);
 }
 
-
+/* Fade effect when content is updating in background */
+.content.loading-fade {
+  opacity: 0.6;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}

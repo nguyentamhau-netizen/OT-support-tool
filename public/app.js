@@ -54,7 +54,7 @@ function getSettingValueClient(key, defaultValue = "") {
 
 async function loadStateFromDb(sync = false, month = selectedMonth, isPolling = false) {
   if (!isPolling) {
-    if (sync) {
+    if (sync || !isBootstrapping) {
       isRefreshing = true;
     } else {
       isBootstrapping = true;
@@ -358,7 +358,7 @@ function render() {
             <button class="btn small" data-action="logout">Logout</button>
           </div>
         </header>
-        <section class="content">${renderView()}</section>
+        <section class="content ${isRefreshing ? "loading-fade" : ""}">${renderView()}</section>
         ${renderModal()}
       </main>
     </div>
