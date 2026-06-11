@@ -576,10 +576,23 @@ function renderCalendar(slots) {
 }
 
 function renderCalendarSlot(slot) {
-  const names = getActiveRegistrations(slot.slotId)
+  const regs = getActiveRegistrations(slot.slotId);
+  const names = regs
     .map((registration) => userLabel(registration.userEmail))
     .join(", ");
-  const css = `${slot.slotType !== "WEEKEND" ? "holiday" : ""} ${slot.status === "FULL" ? "full" : ""}`;
+  
+  const isHoliday = slot.slotType !== "WEEKEND";
+  const isFull = slot.status === "FULL";
+  const isAssigned = regs.length > 0;
+  
+  let statusClass = "empty";
+  if (isFull) {
+    statusClass = "full";
+  } else if (isAssigned) {
+    statusClass = "assigned";
+  }
+
+  const css = `${isHoliday ? "holiday" : ""} ${statusClass}`;
   return `
     <button class="slot-pill ${css}" data-action="focus-slot" data-slot="${slot.slotId}">
       <span class="slot-name">${escapeHtml(slot.title)}</span>

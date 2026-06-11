@@ -398,14 +398,51 @@ textarea {
   text-align: left;
   margin-top: 5px;
   line-height: 1.25;
+  transition: all 0.15s ease;
+}
+
+.slot-pill:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 6px rgba(16, 24, 40, 0.08);
 }
 
 .slot-pill.holiday {
   border-left-color: var(--amber);
 }
 
+/* Empty slots: Highlight needing registration (Soft Amber/Orange) */
+.slot-pill.empty {
+  background: var(--amber-soft);
+  border-color: #f7e0b5;
+}
+.slot-pill.empty:hover {
+  border-color: var(--amber);
+}
+.slot-pill.empty .slot-meta {
+  color: #a15c00;
+  font-weight: 600;
+}
+
+/* Partially assigned slots (Soft Blue) */
+.slot-pill.assigned:not(.full) {
+  background: var(--blue-soft);
+  border-color: #c9d8f5;
+}
+.slot-pill.assigned:not(.full):hover {
+  border-color: var(--blue);
+}
+
+/* Fully registered slots (Soft Green) */
 .slot-pill.full {
-  opacity: 1.0;
+  background: var(--green-soft);
+  border-color: #b8dfd2;
+}
+.slot-pill.full:hover {
+  border-color: var(--accent);
+}
+.slot-pill.full .slot-meta {
+  color: #116149;
+  font-weight: 650;
 }
 
 .slot-name {
