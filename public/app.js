@@ -559,12 +559,14 @@ function renderCalendar(slots) {
     const key = dateKey(date);
     const daySlots = slots.filter((slot) => slot.date === key);
     const isToday = key === todayKey;
+    const holidayLabel = getHolidayLabel(date);
     cells.push(`
       <div class="day ${date.getMonth() === month - 1 ? "" : "out"} ${isToday ? "today" : ""}">
         <div class="day-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <div class="day-number" style="margin-bottom: 0;">${date.getDate()}</div>
           <span class="lunar-day-number">${getLunarDayText(date)}</span>
         </div>
+        ${holidayLabel ? `<div class="day-holiday-badge" title="${escapeHtml(holidayLabel)}"># ${escapeHtml(holidayLabel)}</div>` : ""}
         ${daySlots.map(renderCalendarSlot).join("")}
       </div>
     `);
@@ -1614,3 +1616,56 @@ function getLunarDayText(date) {
   }
   return `${lunar.day}`;
 }
+
+function getHolidayLabel(date) {
+  const d = date.getDate();
+  const m = date.getMonth() + 1;
+  const y = date.getFullYear();
+  
+  // 1. Check solar holidays
+  if (d === 1 && m === 1) return "Tết Dương Lịch";
+  if (d === 30 && m === 4) return "Giải Phóng Miền Nam";
+  if (d === 1 && m === 5) return "Quốc Tế Lao Động";
+  if (d === 2 && m === 9) return "Quốc Khánh";
+  
+  // 2. Check lunar holidays
+  const lunar = getLunarDate(d, m, y);
+  if (lunar && lunar.day !== 0) {
+    const ld = lunar.day;
+    const lm = lunar.month;
+    
+    // Giỗ Tổ Hùng Vương: 10/3 âm lịch
+    if (ld === 10 && lm === 3 && !lunar.leap) {
+      return "Giỗ Tổ Hùng Vương";
+    }
+    
+    // Tết Nguyên Đán: 30/12 (hoặc 29/12) đến 5/1 âm lịch
+    // Tất niên / Giao thừa
+    const nextDay = new Date(date);
+    nextDay.setDate(nextDay.getDate() + 1);
+    const nextLunar = getLunarDate(nextDay.getDate(), nextDay.getMonth() + 1, nextDay.getFullYear());
+    if (nextLunar && nextLunar.day === 1 && nextLunar.month === 1 && !nextLunar.leap) {
+      return "Giao Thừa";
+    }
+
+    if (lm === 1 && (ld === 1 || ld === 2 || ld === 3 || ld === 4 || ld === 5) && !lunar.leap) {
+      return "Tết Nguyên Đán";
+    }
+  }
+
+  // 3. Fallback to holidaySettings in database
+  const key = dateKey(date);
+  if (state.holidaySettings) {
+    const holiday = state.holidaySettings.find(h => h.date === key);
+    if (holiday) return holiday.name;
+  }
+
+  // Also check scheduleSlots of type HOLIDAY or TET
+  if (state.scheduleSlots) {
+    const slot = state.scheduleSlots.find(s => s.date === key && (s.slotType === "HOLIDAY" || s.slotType === "TET"));
+    if (slot) return slot.title;
+  }
+  
+  return null;
+}
+

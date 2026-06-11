@@ -920,3 +920,21 @@ div.empty {
   font-weight: 500;
 }
 
+/* Holiday badge in calendar day cells */
+.day-holiday-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--red);
+  background: var(--red-soft);
+  border: 1px solid #f1b5af;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+
