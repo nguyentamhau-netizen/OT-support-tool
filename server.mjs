@@ -1923,7 +1923,13 @@ async function handleApi(req, res, url) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/chat/trigger-reminders") {
-      if (!session || session.role !== "ADMIN") {
+      const cronToken = process.env.CRON_TOKEN;
+      const hasValidToken = cronToken && (
+        req.headers["x-cron-token"] === cronToken ||
+        url.searchParams.get("token") === cronToken
+      );
+
+      if (!hasValidToken && (!session || session.role !== "ADMIN")) {
         return sendJson(res, 401, { ok: false, error: "Unauthorized." });
       }
       const now = new Date();
