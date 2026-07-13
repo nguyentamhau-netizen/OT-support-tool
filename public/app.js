@@ -1187,46 +1187,27 @@ function bindShellEvents() {
     });
   });
 
-  document.querySelector("[data-action='modal-confirm-register']")?.addEventListener("click", () => {
+  document.querySelector("[data-action='modal-confirm-register']")?.addEventListener("click", async () => {
     if (!modal?.slotId) return;
+    const slotId = modal.slotId;
     const selectedMember = document.querySelector("[data-action='modal-member-select']")?.value;
     const targetEmail = isAdmin() && selectedMember ? selectedMember : session.email;
-    const error = registerSlot(modal.slotId, targetEmail, session.email, {
-      allowPast: isAdmin(),
-      allowMonthlyOverride: isAdmin()
-    });
-    if (error) {
-      modal = { type: "info", title: "Không thể đăng ký", message: error, primary: { label: "Close", action: "modal-close" } };
-    } else {
-      modal = null;
-      showToast("Đăng ký ca trực thành công!");
-    }
-    render();
+    modal = null;
+    await registerSlot(slotId, targetEmail);
   });
 
-  document.querySelector("[data-action='modal-confirm-cancel']")?.addEventListener("click", () => {
+  document.querySelector("[data-action='modal-confirm-cancel']")?.addEventListener("click", async () => {
     if (!modal?.registrationId) return;
-    const error = cancelRegistration(modal.registrationId);
-    if (error) {
-      modal = { type: "info", title: "Không thể hủy đăng ký", message: error, primary: { label: "Close", action: "modal-close" } };
-    } else {
-      modal = null;
-      showToast("Đã hủy đăng ký ca trực!");
-    }
-    render();
+    const registrationId = modal.registrationId;
+    modal = null;
+    await cancelRegistration(registrationId);
   });
 
   document.querySelectorAll("[data-action='admin-cancel-reg']").forEach((button) => {
-    button.addEventListener("click", () => {
+    button.addEventListener("click", async () => {
       const regId = button.dataset.regId;
-      const error = cancelRegistration(regId);
-      if (error) {
-        modal = { type: "info", title: "Không thể hủy đăng ký", message: error, primary: { label: "Close", action: "modal-close" } };
-      } else {
-        modal = null;
-        showToast("Đã hủy đăng ký ca trực!");
-      }
-      render();
+      modal = null;
+      await cancelRegistration(regId);
     });
   });
 
