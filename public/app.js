@@ -12,6 +12,19 @@ let saveStatus = "";
 let saveTimer = null;
 let isRefreshing = false;
 
+// Global fetch interceptor to handle unauthorized sessions (expired session_token cookie)
+const originalFetch = window.fetch;
+window.fetch = async function (resource, options) {
+  const response = await originalFetch(resource, options);
+  const url = typeof resource === "string" ? resource : (resource?.url || "");
+  if (response.status === 401 && url.includes("/api/") && !url.includes("/api/auth/login")) {
+    localStorage.removeItem("ot-support-session");
+    session = null;
+    modal = null;
+    render();
+  }
+  return response;
+};
 
 const app = document.querySelector("#app");
 
