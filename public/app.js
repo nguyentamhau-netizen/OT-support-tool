@@ -165,7 +165,8 @@ function formatDate(value) {
     weekday: "short",
     day: "2-digit",
     month: "2-digit",
-    year: "numeric"
+    year: "numeric",
+    timeZone: "Asia/Ho_Chi_Minh"
   }).format(date);
 }
 
@@ -175,7 +176,8 @@ function formatDateLong(value) {
     weekday: "long",
     day: "2-digit",
     month: "long",
-    year: "numeric"
+    year: "numeric",
+    timeZone: "Asia/Ho_Chi_Minh"
   }).format(date);
 }
 
@@ -1350,7 +1352,7 @@ function renderAdminSchedule() {
           <tbody>
             ${(state.chatNotifications || []).slice(-20).reverse().map(n => `
               <tr>
-                <td>${n.sentAt ? new Date(n.sentAt).toLocaleString("en-US") : "N/A"}</td>
+                <td>${n.sentAt ? new Date(n.sentAt).toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }) : "N/A"}</td>
                 <td>${escapeHtml(n.type || "CHAT")}</td>
                 <td class="notif-message" title="${escapeHtml(n.message || "")}">${escapeHtml((n.message || "").slice(0, 60))}${(n.message || "").length > 60 ? "..." : ""}</td>
                 <td><span class="status ${(n.status || "sent").toLowerCase()}">${n.status || "SENT"}</span></td>
