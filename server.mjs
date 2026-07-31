@@ -16,6 +16,15 @@ let cachedAdminToken = process.env.TAIGA_ADMIN_TOKEN || null;
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkeyforotsupporttool2026";
 const DB_DIR = join(process.cwd(), "db_cache");
 
+// SSE (Server-Sent Events) connections for real-time updates
+const sseClients = new Set();
+function broadcastSSE(eventType, data = {}) {
+  const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    try { client.write(payload); } catch { sseClients.delete(client); }
+  }
+}
+
 const contentTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -351,7 +360,10 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   const satSlotIds = satSlots.map(s => s.slotId);
   const satRegs = (localState.registrations || []).filter(r => satSlotIds.includes(r.slotId) && r.status === "ACTIVE");
   if (satRegs.length > 0) {
-    const assignees = [...new Set(satRegs.map(r => `<users/${r.userEmail}>`))].join(", ");
+    const assignees = [...new Set(satRegs.map(r => {
+      const u = (localState.users || []).find(user => user.email.toLowerCase() === r.userEmail.toLowerCase());
+      return u ? `*${u.displayName}* (${r.userEmail})` : `*${r.userEmail}*`;
+    }))].join(", ");
     msgText += `*Thứ 7 (${satDisplay}):* ${assignees}\n\n`;
   } else {
     msgText += `*Thứ 7 (${satDisplay}):* ⚠️ Chưa có người trực -> <${appUrl}|Đăng ký tại đây>\n\n`;
@@ -361,7 +373,10 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   const sunSlotIds = sunSlots.map(s => s.slotId);
   const sunRegs = (localState.registrations || []).filter(r => sunSlotIds.includes(r.slotId) && r.status === "ACTIVE");
   if (sunRegs.length > 0) {
-    const assignees = [...new Set(sunRegs.map(r => `<users/${r.userEmail}>`))].join(", ");
+    const assignees = [...new Set(sunRegs.map(r => {
+      const u = (localState.users || []).find(user => user.email.toLowerCase() === r.userEmail.toLowerCase());
+      return u ? `*${u.displayName}* (${r.userEmail})` : `*${r.userEmail}*`;
+    }))].join(", ");
     msgText += `*Chủ Nhật (${sunDisplay}):* ${assignees}\n\n`;
   } else {
     msgText += `*Chủ Nhật (${sunDisplay}):* ⚠️ Chưa có người trực -> <${appUrl}|Đăng ký tại đây>\n\n`;
@@ -978,8 +993,22 @@ async function saveLocalState(state) {
 
 async function handleExcelExport(req, res, url) {
   const month = url.searchParams.get("month");
+  const toMonth = url.searchParams.get("toMonth");
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     return sendJson(res, 400, { ok: false, error: "Missing or invalid month parameter. Format: YYYY-MM" });
+  }
+
+  // Build list of months to export
+  const monthsToExport = [month];
+  if (toMonth && /^\d{4}-\d{2}$/.test(toMonth) && toMonth > month) {
+    const [sy, sm] = month.split("-").map(Number);
+    const [ey, em] = toMonth.split("-").map(Number);
+    let cy = sy, cm = sm + 1;
+    while (cy < ey || (cy === ey && cm <= em)) {
+      monthsToExport.push(`${cy}-${String(cm).padStart(2, "0")}`);
+      cm++;
+      if (cm > 12) { cm = 1; cy++; }
+    }
   }
 
   try {
@@ -990,111 +1019,91 @@ async function handleExcelExport(req, res, url) {
 
     const localState = await loadLocalState();
 
-    const [year, monthVal] = month.split("-");
-    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    const shortMonth = monthNames[parseInt(monthVal, 10) - 1] || "Month";
-    const sheetName = `${shortMonth}${year}`;
-
-    // Get slots of this month
-    const slots = localState.scheduleSlots
-      .filter(s => s.month === month)
-      .sort((a, b) => a.date.localeCompare(b.date));
-
     // Get active users
     const activeUsers = localState.users
       .filter(u => u.status === "ACTIVE")
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-    let worksheet = workbook.getWorksheet(sheetName);
-    if (worksheet) {
-      workbook.removeWorksheet(sheetName);
-    }
-    worksheet = workbook.addWorksheet(sheetName);
-    worksheet.views = [{ showGridLines: true }];
+    const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-    // Row 1: Totals
-    worksheet.getRow(1).getCell(1).value = "Total (man-days)";
-    worksheet.getRow(1).getCell(1).font = { name: "Arial", size: 10, bold: true };
+    for (const exportMonth of monthsToExport) {
+      const [year, monthVal] = exportMonth.split("-");
+      const shortMonth = monthNames[parseInt(monthVal, 10) - 1] || "Month";
+      const sheetName = `${shortMonth}${year}`;
 
-    // Row 2: Headers
-    worksheet.getRow(2).getCell(1).value = "Date";
-    worksheet.getRow(2).getCell(1).font = { name: "Arial", size: 10, bold: true };
-    worksheet.getRow(2).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+      // Get slots of this month
+      const slots = localState.scheduleSlots
+        .filter(s => s.month === exportMonth)
+        .sort((a, b) => a.date.localeCompare(b.date));
 
-    activeUsers.forEach((user, idx) => {
-      const colNum = idx + 2;
-      // Row 2 cell
-      const cellHeader = worksheet.getRow(2).getCell(colNum);
-      cellHeader.value = user.username;
-      cellHeader.font = { name: "Arial", size: 10, bold: true };
-      cellHeader.fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FFD0E0E3" },
-        bgColor: { argb: "FFD0E0E3" }
-      };
-      cellHeader.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      let worksheet = workbook.getWorksheet(sheetName);
+      if (worksheet) workbook.removeWorksheet(sheetName);
+      worksheet = workbook.addWorksheet(sheetName);
+      worksheet.views = [{ showGridLines: true }];
 
-      // Row 1 cell (SUM Formula)
-      const cellTotal = worksheet.getRow(1).getCell(colNum);
-      const colLetter = worksheet.getColumn(colNum).letter;
-      cellTotal.value = {
-        formula: `SUM(${colLetter}3:${colLetter}${slots.length + 2})`,
-        result: 0
-      };
-      cellTotal.font = { name: "Arial", size: 10, bold: true };
-      cellTotal.numFmt = "#,##0.0";
-    });
+      // Row 1: Totals
+      worksheet.getRow(1).getCell(1).value = "Total (man-days)";
+      worksheet.getRow(1).getCell(1).font = { name: "Arial", size: 10, bold: true };
 
-    // Write Data rows
-    slots.forEach((slot, sIdx) => {
-      const rowNum = sIdx + 3;
-      const row = worksheet.getRow(rowNum);
+      // Row 2: Headers
+      worksheet.getRow(2).getCell(1).value = "Date";
+      worksheet.getRow(2).getCell(1).font = { name: "Arial", size: 10, bold: true };
+      worksheet.getRow(2).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
 
-      // Col 1: Date
-      const cellDate = row.getCell(1);
-      const parts = slot.date.split("-").map(Number);
-      cellDate.value = new Date(parts[0], parts[1] - 1, parts[2]);
-      cellDate.font = { name: "Arial", size: 10 };
-      cellDate.alignment = { horizontal: "right", vertical: "middle" };
-      cellDate.numFmt = "ddd, mmm dd, yyyy";
+      activeUsers.forEach((user, idx) => {
+        const colNum = idx + 2;
+        const cellHeader = worksheet.getRow(2).getCell(colNum);
+        cellHeader.value = user.username;
+        cellHeader.font = { name: "Arial", size: 10, bold: true };
+        cellHeader.fill = {
+          type: "pattern", pattern: "solid",
+          fgColor: { argb: "FFD0E0E3" }, bgColor: { argb: "FFD0E0E3" }
+        };
+        cellHeader.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
 
-      activeUsers.forEach((user, uIdx) => {
-        const colNum = uIdx + 2;
-        const cellVal = row.getCell(colNum);
-
-        // Find registration
-        const reg = localState.registrations.find(r => 
-          r.slotId === slot.slotId && 
-          r.userEmail.toLowerCase() === user.email.toLowerCase() && 
-          r.status === "ACTIVE"
-        );
-
-        if (reg) {
-          // Rule: Default factor is always 0.5 in report export
-          cellVal.value = 0.5;
-          cellVal.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFF0000" } };
-          cellVal.fill = {
-            type: "pattern",
-            pattern: "solid",
-            fgColor: { argb: "FFFFFF00" },
-            bgColor: { argb: "FFFFFF00" }
-          };
-          cellVal.alignment = { horizontal: "center", vertical: "middle" };
-          cellVal.numFmt = "#,##0.0";
-        }
+        const cellTotal = worksheet.getRow(1).getCell(colNum);
+        const colLetter = worksheet.getColumn(colNum).letter;
+        cellTotal.value = { formula: `SUM(${colLetter}3:${colLetter}${slots.length + 2})`, result: 0 };
+        cellTotal.font = { name: "Arial", size: 10, bold: true };
+        cellTotal.numFmt = "#,##0.0";
       });
-    });
 
-    // Autofit widths
-    worksheet.getColumn(1).width = 20;
-    activeUsers.forEach((_, idx) => {
-      worksheet.getColumn(idx + 2).width = 14;
-    });
+      slots.forEach((slot, sIdx) => {
+        const rowNum = sIdx + 3;
+        const row = worksheet.getRow(rowNum);
+        const cellDate = row.getCell(1);
+        const parts = slot.date.split("-").map(Number);
+        cellDate.value = new Date(parts[0], parts[1] - 1, parts[2]);
+        cellDate.font = { name: "Arial", size: 10 };
+        cellDate.alignment = { horizontal: "right", vertical: "middle" };
+        cellDate.numFmt = "ddd, mmm dd, yyyy";
 
+        activeUsers.forEach((user, uIdx) => {
+          const colNum = uIdx + 2;
+          const cellVal = row.getCell(colNum);
+          const reg = localState.registrations.find(r =>
+            r.slotId === slot.slotId &&
+            r.userEmail.toLowerCase() === user.email.toLowerCase() &&
+            r.status === "ACTIVE"
+          );
+          if (reg) {
+            cellVal.value = 0.5;
+            cellVal.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFF0000" } };
+            cellVal.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" }, bgColor: { argb: "FFFFFF00" } };
+            cellVal.alignment = { horizontal: "center", vertical: "middle" };
+            cellVal.numFmt = "#,##0.0";
+          }
+        });
+      });
+
+      worksheet.getColumn(1).width = 20;
+      activeUsers.forEach((_, idx) => { worksheet.getColumn(idx + 2).width = 14; });
+    }
+
+    const fileLabel = toMonth ? `${month}_to_${toMonth}` : month;
     res.writeHead(200, {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="AMAZE_OT_Report_${month}.xlsx"`,
+      "Content-Disposition": `attachment; filename="AMAZE_OT_Report_${fileLabel}.xlsx"`,
       "Cache-Control": "no-store"
     });
 
@@ -1122,11 +1131,16 @@ async function handleApi(req, res, url) {
       const userData = await authRes.json();
       const email = userData.email.toLowerCase();
 
-      if (!email.endsWith("@kyanon.digital")) {
-        return sendJson(res, 403, { ok: false, error: "Only @kyanon.digital accounts are permitted." });
+      const domain = await getSettingValue("company_domain", "kyanon.digital");
+      if (!email.endsWith(`@${domain}`)) {
+        return sendJson(res, 403, { ok: false, error: `Only @${domain} accounts are permitted.` });
       }
 
-      const isUserAdmin = email === "hau.nt@kyanon.digital";
+      // Determine admin from DB setting instead of hardcode
+      const adminEmail = (await getSettingValue("admin_email", "hau.nt@kyanon.digital")).toLowerCase();
+      const localUsers = await readCSVTable("users");
+      const dbUser = localUsers.find(u => u.email.toLowerCase() === email);
+      const isUserAdmin = email === adminEmail || (dbUser && dbUser.role === "ADMIN");
       const token = signToken({
         email,
         username: userData.username,
@@ -1160,7 +1174,20 @@ async function handleApi(req, res, url) {
         await syncFromTaiga();
       }
       await ensureMonthBackend(month);
-      sendJson(res, 200, { ok: true, state: await loadLocalState() });
+      const fullState = await loadLocalState();
+
+      // Phase 2: Filter data by month to reduce payload
+      const monthSlotIds = new Set((fullState.scheduleSlots || []).filter(s => s.month === month).map(s => s.slotId));
+      const filteredState = {
+        ...fullState,
+        registrations: (fullState.registrations || []).filter(r => monthSlotIds.has(r.slotId)),
+        auditLogs: (fullState.auditLogs || []).slice(-200),
+        chatNotifications: (fullState.chatNotifications || []).filter(n => monthSlotIds.has(n.slotId))
+      };
+
+      // Phase 1: Include session info
+      const sessionInfo = session ? { email: session.email, role: session.role, displayName: session.displayName } : null;
+      sendJson(res, 200, { ok: true, state: filteredState, session: sessionInfo });
       return;
     }
 
@@ -1335,6 +1362,13 @@ async function handleApi(req, res, url) {
 
       // Save State
       await saveLocalState(localState);
+
+      // SSE broadcast + Chat notification for registration
+      const displayName = user.displayName || userEmail;
+      const dateDisplay = formatDisplayDate(slot.date);
+      broadcastSSE("registration", { action: "register", slotId, userEmail, displayName, date: slot.date });
+      await sendGoogleChatMessage(`✅ *Đăng ký ca trực*\n👤 *${displayName}* (${userEmail})\n📅 Ngày: *${dateDisplay}*\n📌 Ca: *${slot.title}*`);
+
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
     }
 
@@ -1416,6 +1450,14 @@ async function handleApi(req, res, url) {
       }
 
       await saveLocalState(localState);
+
+      // SSE broadcast + Chat notification for cancellation
+      const cancelUser = localState.users.find(u => u.email.toLowerCase() === registration.userEmail.toLowerCase());
+      const cancelDisplayName = cancelUser?.displayName || registration.userEmail;
+      const cancelDateDisplay = slot ? formatDisplayDate(slot.date) : "";
+      broadcastSSE("registration", { action: "cancel", slotId: registration.slotId, userEmail: registration.userEmail, displayName: cancelDisplayName, date: slot?.date });
+      await sendGoogleChatMessage(`❌ *Hủy đăng ký ca trực*\n👤 *${cancelDisplayName}* (${registration.userEmail})\n📅 Ngày: *${cancelDateDisplay}*\n👤 Hủy bởi: *${session.email}*`);
+
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
     }
 
@@ -1924,6 +1966,175 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    // ========== Phase 4: New API Endpoints ==========
+
+    // Swap ca trực (Admin only)
+    if (req.method === "POST" && url.pathname === "/api/slots/swap") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      const { slotId, fromEmail, toEmail } = await readJson(req);
+      if (!slotId || !fromEmail || !toEmail) {
+        return sendJson(res, 400, { ok: false, error: "Missing slotId, fromEmail, or toEmail." });
+      }
+
+      const localState = await loadLocalState();
+      const slot = localState.scheduleSlots.find(s => s.slotId === slotId);
+      if (!slot) return sendJson(res, 404, { ok: false, error: "Slot not found." });
+
+      const fromUser = localState.users.find(u => u.email.toLowerCase() === fromEmail.toLowerCase());
+      const toUser = localState.users.find(u => u.email.toLowerCase() === toEmail.toLowerCase() && u.status === "ACTIVE");
+      if (!fromUser || !toUser) return sendJson(res, 400, { ok: false, error: "User not found or inactive." });
+
+      const fromReg = localState.registrations.find(r => r.slotId === slotId && r.userEmail.toLowerCase() === fromEmail.toLowerCase() && r.status === "ACTIVE");
+      if (!fromReg) return sendJson(res, 400, { ok: false, error: "Người được swap chưa đăng ký slot này." });
+
+      // Cancel old registration
+      fromReg.status = "CANCELLED";
+      fromReg.updatedAt = new Date().toISOString();
+      fromReg.note = `Swapped to ${toEmail} by admin`;
+
+      // Create new registration
+      const capacity = localState.capacities.find(c => c.slotId === slotId);
+      const newReg = {
+        registrationId: `reg_${Date.now()}_${toUser.username.replace(/\./g, "_")}`,
+        slotId,
+        capacityId: capacity?.capacityId || "",
+        userEmail: toEmail.toLowerCase(),
+        registeredByEmail: session.email.toLowerCase(),
+        status: "ACTIVE",
+        approvedStatus: "ADMIN_APPROVED",
+        source: "admin_swap",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        note: `Swapped from ${fromEmail} by admin`
+      };
+      localState.registrations.push(newReg);
+
+      // Audit log
+      localState.auditLogs.push({
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "REGISTRATION_SWAP",
+        entityType: "registration",
+        entityId: slotId,
+        beforeJson: JSON.stringify({ from: fromEmail }),
+        afterJson: JSON.stringify({ to: toEmail }),
+        createdAt: new Date().toISOString()
+      });
+
+      // Update Taiga
+      if (slot.taigaIssueId) {
+        try {
+          const memberships = await taigaFetch(`/memberships?project=${projectId}`);
+          const toTaigaUser = memberships.find(m => (m.user_email || m.email || "").toLowerCase() === toEmail.toLowerCase());
+          const existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
+          await taigaFetch(`/issues/${slot.taigaIssueId}`, {
+            method: "PATCH",
+            body: JSON.stringify({
+              version: existingIssue.version,
+              assigned_to: toTaigaUser?.user || null,
+              comment: `[SWAP] Admin swapped from ${fromEmail} to ${toEmail}`
+            })
+          });
+        } catch (err) { console.warn("Taiga swap update failed:", err.message); }
+      }
+
+      await saveLocalState(localState);
+      const dateDisplay = formatDisplayDate(slot.date);
+      broadcastSSE("registration", { action: "swap", slotId, fromEmail, toEmail, date: slot.date });
+      await sendGoogleChatMessage(`🔄 *Đổi ca trực*\n📅 Ngày: *${dateDisplay}*\n👤 Từ: *${fromUser.displayName}* → *${toUser.displayName}*\n👤 Admin: *${session.email}*`);
+      return sendJson(res, 200, { ok: true, state: await loadLocalState() });
+    }
+
+    // Bulk review update requests (Admin only)
+    if (req.method === "POST" && url.pathname === "/api/update-requests/bulk-review") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      const { requestIds, status } = await readJson(req);
+      if (!requestIds?.length || !status) {
+        return sendJson(res, 400, { ok: false, error: "Missing requestIds or status." });
+      }
+
+      const localState = await loadLocalState();
+      let processed = 0;
+      for (const requestId of requestIds) {
+        const requestObj = localState.updateRequests.find(r => r.requestId === requestId);
+        if (!requestObj || requestObj.status !== "PENDING") continue;
+        requestObj.status = status;
+        requestObj.reviewedBy = session.email;
+        requestObj.reviewedAt = new Date().toISOString();
+        localState.auditLogs.push({
+          logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}_${processed}`,
+          actorEmail: session.email,
+          action: `UPDATE_REQUEST_${status}`,
+          entityType: "update_request",
+          entityId: requestId,
+          beforeJson: "",
+          afterJson: JSON.stringify(requestObj),
+          createdAt: new Date().toISOString()
+        });
+        processed++;
+      }
+
+      await saveLocalState(localState);
+      broadcastSSE("review", { action: "bulk-review", count: processed, status });
+      return sendJson(res, 200, { ok: true, processed, state: await loadLocalState() });
+    }
+
+    // Resend chat notification
+    if (req.method === "POST" && url.pathname === "/api/chat/resend") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized." });
+      }
+      const { notificationId } = await readJson(req);
+      const localState = await loadLocalState();
+      const notif = (localState.chatNotifications || []).find(n => n.notificationId === notificationId);
+      if (!notif) return sendJson(res, 404, { ok: false, error: "Notification not found." });
+
+      const success = await sendGoogleChatMessage(notif.message);
+      notif.sentAt = success ? new Date().toISOString() : notif.sentAt;
+      notif.status = success ? "SENT" : "FAILED";
+      await saveLocalState(localState);
+      sendJson(res, 200, { ok: success });
+      return;
+    }
+
+    // Stats API for charts
+    if (req.method === "GET" && url.pathname === "/api/stats") {
+      const months = (url.searchParams.get("months") || "").split(",").filter(Boolean);
+      const localState = await loadLocalState();
+      const stats = months.map(month => {
+        const slots = (localState.scheduleSlots || []).filter(s => s.month === month);
+        const slotIds = new Set(slots.map(s => s.slotId));
+        const regs = (localState.registrations || []).filter(r => slotIds.has(r.slotId) && r.status === "ACTIVE");
+
+        const userStats = {};
+        regs.forEach(r => {
+          if (!userStats[r.userEmail]) userStats[r.userEmail] = { days: 0, hours: 0, manMonth: 0 };
+          userStats[r.userEmail].days += 1;
+          const cap = (localState.capacities || []).find(c => c.capacityId === r.capacityId);
+          userStats[r.userEmail].hours += Number(cap?.hoursPerPerson || 8);
+          const slot = slots.find(s => s.slotId === r.slotId);
+          if (slot?.slotType === "HOLIDAY" || slot?.slotType === "TET") {
+            const activeCount = Math.max(1, regs.filter(rr => rr.slotId === r.slotId).length);
+            userStats[r.userEmail].manMonth += Number(cap?.manMonthFactor || 0) / activeCount;
+          } else {
+            userStats[r.userEmail].manMonth += Number(cap?.manMonthFactor || 0);
+          }
+        });
+
+        const typeBreakdown = { WEEKEND: 0, HOLIDAY: 0, TET: 0 };
+        slots.forEach(s => { typeBreakdown[s.slotType] = (typeBreakdown[s.slotType] || 0) + 1; });
+
+        return { month, totalSlots: slots.length, totalRegs: regs.length, userStats, typeBreakdown };
+      });
+
+      sendJson(res, 200, { ok: true, stats });
+      return;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/health") {
       sendJson(res, 200, { ok: true, projectSlug });
       return;
@@ -1943,19 +2154,73 @@ async function handleApi(req, res, url) {
 setInterval(async () => {
   try {
     const now = new Date();
-    // Check if the current hour is 17 (5 PM)
-    if (now.getHours() === 17) {
+    const hour = now.getHours();
+    const dayOfWeek = now.getDay();
+
+    // 17:00 daily reminder check
+    if (hour === 17) {
       console.log("[BACKGROUND-JOB] Running daily reminder check...");
       const resData = await checkAndSendReminders(now);
       console.log("[BACKGROUND-JOB] Check completed:", JSON.stringify(resData));
     }
+
+    // Saturday 9:00 AM re-reminder for OPEN slots
+    if (dayOfWeek === 6 && hour === 9) {
+      console.log("[BACKGROUND-JOB] Saturday morning re-reminder check...");
+      const localState = await loadLocalState();
+      const todayStr = dateKeyString(now);
+      const todaySlots = (localState.scheduleSlots || []).filter(s => s.date === todayStr);
+      for (const slot of todaySlots) {
+        const regs = (localState.registrations || []).filter(r => r.slotId === slot.slotId && r.status === "ACTIVE");
+        if (regs.length === 0) {
+          const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || await getSettingValue("app_url") || "http://localhost:3000";
+          const dateDisplay = formatDisplayDate(todayStr);
+          await sendGoogleChatMessage(`⚠️ *NHẮC LẠI: Ca trực HÔM NAY (${dateDisplay}) chưa có người đăng ký!*\n👉 Vui lòng đăng ký ngay: <${appUrl}|Đăng ký tại đây>`);
+        }
+      }
+    }
+
+    // Monthly summary: 1st of every month at 10 AM
+    if (now.getDate() === 1 && hour === 10) {
+      console.log("[BACKGROUND-JOB] Sending monthly summary...");
+      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
+      const localState = await loadLocalState();
+      const slots = (localState.scheduleSlots || []).filter(s => s.month === lastMonthStr);
+      const slotIds = new Set(slots.map(s => s.slotId));
+      const regs = (localState.registrations || []).filter(r => slotIds.has(r.slotId) && r.status === "ACTIVE");
+      const userCounts = {};
+      regs.forEach(r => {
+        const u = (localState.users || []).find(user => user.email.toLowerCase() === r.userEmail.toLowerCase());
+        const name = u ? u.displayName : r.userEmail;
+        userCounts[name] = (userCounts[name] || 0) + 1;
+      });
+      const summary = Object.entries(userCounts).map(([name, count]) => `• *${name}*: ${count} ngày`).join("\n") || "Không có dữ liệu.";
+      const [y, m] = lastMonthStr.split("-");
+      await sendGoogleChatMessage(`📊 *TỔNG KẾT TRỰC THÁNG ${m}/${y}*\n\n${summary}\n\n📌 Tổng: *${slots.length}* ngày trực, *${regs.length}* lượt đăng ký.`);
+    }
   } catch (err) {
-    console.error("[BACKGROUND-JOB] Error checking reminders:", err.message);
+    console.error("[BACKGROUND-JOB] Error:", err.message);
   }
 }, 30 * 60 * 1000); // 30 minutes
 
 createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+
+  // SSE endpoint - handle before API routing
+  if (url.pathname === "/api/events" && req.method === "GET") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "Access-Control-Allow-Origin": "*"
+    });
+    res.write("event: connected\ndata: {}\n\n");
+    sseClients.add(res);
+    req.on("close", () => sseClients.delete(res));
+    return;
+  }
+
   if (url.pathname.startsWith("/api/")) {
     await handleApi(req, res, url);
     return;
@@ -1977,6 +2242,12 @@ createServer(async (req, res) => {
 }).listen(port, async () => {
   console.log(`OT Support Tool local app: http://localhost:${port}`);
   console.log(`Taiga integrated backend online. API URL: ${apiUrl}, Project slug: ${projectSlug}`);
+
+  // Security warning
+  if (JWT_SECRET === "supersecretjwtkeyforotsupporttool2026") {
+    console.warn("[SECURITY WARNING] JWT_SECRET is using default value! Set a strong secret in .env.local");
+  }
+
   await initTaigaConfig();
   if (projectId) {
     try {

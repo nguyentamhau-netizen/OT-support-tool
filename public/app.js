@@ -1,5 +1,4 @@
 const COMPANY_DOMAIN = "kyanon.digital";
-const ADMIN_EMAIL = "hau.nt@kyanon.digital";
 
 let state = emptyState();
 let session = loadSession();
@@ -11,6 +10,18 @@ let bootstrapError = "";
 let saveStatus = "";
 let saveTimer = null;
 let isRefreshing = false;
+
+// Enhanced state
+let darkMode = localStorage.getItem("ot-dark-mode") === "true";
+let sidebarOpen = false;
+let slotFilter = "ALL"; // ALL, OPEN, FULL
+let userSearch = "";
+let requestFilter = "ALL"; // ALL, PENDING, APPROVED, REJECTED
+let exportToMonth = "";
+let selectedBulkIds = new Set();
+let sseSource = null;
+
+if (darkMode) document.documentElement.setAttribute("data-theme", "dark");
 
 // Global fetch interceptor to handle unauthorized sessions (expired session_token cookie)
 const originalFetch = window.fetch;
@@ -86,11 +97,17 @@ async function loadStateFromDb(sync = false, month = selectedMonth, isPolling = 
       ...emptyState(),
       ...payload.state
     };
+    // Update session info from server (role-based admin)
+    if (payload.session && session) {
+      session = { ...session, ...payload.session };
+      localStorage.setItem("ot-support-session", JSON.stringify(session));
+    }
     isBootstrapping = false;
     bootstrapError = "";
     isRefreshing = false;
     saveStatus = "";
     render();
+    connectSSE();
   } catch (error) {
     isBootstrapping = false;
     isRefreshing = false;
@@ -169,7 +186,7 @@ function isPastDate(value) {
 }
 
 function isAdmin() {
-  return session?.email?.toLowerCase() === ADMIN_EMAIL;
+  return session?.role === "ADMIN";
 }
 
 function currentUser() {
@@ -301,6 +318,12 @@ function render() {
         <div class="login-box">
           <h2>Loading OT Support Database</h2>
           <p class="muted">Đang tải dữ liệu từ Taiga và Cơ sở dữ liệu...</p>
+          <div class="grid cols-4" style="margin-top:20px">
+            <div class="skeleton skeleton-metric"></div>
+            <div class="skeleton skeleton-metric"></div>
+            <div class="skeleton skeleton-metric"></div>
+            <div class="skeleton skeleton-metric"></div>
+          </div>
         </div>
       </div>
     `;
@@ -334,15 +357,18 @@ function render() {
   }
 
   const navItems = [
-    ["dashboard", "Register Dashboard"],
-    ["stats", "Statistics"],
-    ["requests", "Requests"],
-    ...(isAdmin() ? [["admin-users", "Users"], ["admin-schedule", "Schedule"]] : [])
+    ["dashboard", "📋", "Register Dashboard"],
+    ["stats", "📊", "Statistics"],
+    ["requests", "📝", "Requests"],
+    ["profile", "👤", "My Profile"],
+    ...(isAdmin() ? [["admin-users", "👥", "Users"], ["admin-schedule", "⚙️", "Schedule"]] : [])
   ];
 
   app.innerHTML = `
+    <button class="hamburger" data-action="toggle-sidebar">☰</button>
+    <div class="sidebar-overlay" data-action="close-sidebar"></div>
     <div class="shell">
-      <aside class="sidebar">
+      <aside class="sidebar ${sidebarOpen ? 'open' : ''}">
         <div class="brand">
           <div class="brand-mark">OT</div>
           <div>
@@ -351,21 +377,22 @@ function render() {
           </div>
         </div>
         <nav class="nav">
-          ${navItems.map(([key, label]) => `<button class="${view === key ? "active" : ""}" data-nav="${key}">${label}</button>`).join("")}
+          ${navItems.map(([key, icon, label]) => `<button class="${view === key ? "active" : ""}" data-nav="${key}">${icon} ${label}</button>`).join("")}
         </nav>
         <div class="sidebar-footer">
           Taiga & Local DB<br />
-          kyanon.digital only
+          <span class="kbd">←</span><span class="kbd">→</span> navigate months
         </div>
       </aside>
       <main class="main">
         <header class="topbar">
           <h1 class="page-title">${pageTitle()}</h1>
           <div class="user-menu">
-            <span class="status info">${escapeHtml(saveStatus || "Synced with Taiga")}</span>
+            <span class="status info">${escapeHtml(saveStatus || "Synced")}</span>
+            <button class="theme-toggle" data-action="toggle-theme" title="Toggle dark mode">${darkMode ? '☀️' : '🌙'}</button>
             <div>
               <strong>${escapeHtml(user.displayName)}</strong>
-              <div class="muted">${escapeHtml(user.email)}</div>
+              <div class="muted">${escapeHtml(session.role || 'MEMBER')}</div>
             </div>
             <div class="avatar">${user.displayName.slice(0, 1).toUpperCase()}</div>
             <button class="btn small" data-action="logout">Logout</button>
@@ -385,6 +412,7 @@ function pageTitle() {
     dashboard: "Register Dashboard",
     stats: "Support Statistics",
     requests: "Update Requests",
+    profile: "My Profile",
     "admin-users": "Admin User Management",
     "admin-schedule": "Admin Schedule Setup"
   };
@@ -436,7 +464,7 @@ function renderLogin(message = "") {
       const data = await response.json();
       if (!response.ok || !data.ok) throw new Error(data.error || "Login failed");
       
-      saveSession({ email: data.user.email });
+      saveSession({ email: data.user.email, role: data.user.role || "MEMBER" });
       await loadStateFromDb();
     } catch (err) {
       renderLogin(err.message);
@@ -448,6 +476,7 @@ function renderView() {
   if (view === "dashboard") return renderDashboard();
   if (view === "stats") return renderStats();
   if (view === "requests") return renderRequests();
+  if (view === "profile") return renderProfile();
   if (view === "admin-users") return renderAdminUsers();
   if (view === "admin-schedule") return renderAdminSchedule();
   return "";
@@ -456,12 +485,17 @@ function renderView() {
 function renderActionToolbar() {
   return `
     <div class="toolbar">
-      <div></div>
+      <div class="toolbar-group">
+        <div class="export-range">
+          <label>Đến tháng:</label>
+          <input type="month" value="${exportToMonth}" data-action="set-export-to-month" />
+        </div>
+      </div>
       <div class="toolbar-group">
         <button class="btn" data-action="refresh-db" ${isRefreshing ? "disabled" : ""}>
-          ${isRefreshing ? '<span class="spinner"></span>Refreshing...' : 'Refresh'}
+          ${isRefreshing ? '<span class="spinner"></span>Refreshing...' : '🔄 Refresh'}
         </button>
-        <button class="btn primary" data-action="export-preview">Export preview</button>
+        <button class="btn primary" data-action="export-preview">📥 Export Excel</button>
       </div>
     </div>
   `;
@@ -517,6 +551,40 @@ function renderDashboard() {
   const [year, month] = selectedMonth.split("-");
   const displayLabel = `Tháng ${parseInt(month, 10)} - ${year}`;
 
+  if (slots.length === 0) {
+    return `
+      ${renderActionToolbar()}
+      <div class="grid cols-4">
+        ${metric("Support days", 0)}
+        ${metric("Open slots", 0)}
+        ${metric("Assigned people", 0)}
+        ${metric("Total hours", 0)}
+      </div>
+      <div class="split" style="margin-top:16px">
+        <section class="panel">
+          <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+            <h2 class="panel-title">Calendar</h2>
+            ${renderMonthSelector()}
+          </div>
+          <div class="panel-body">${renderCalendar(slots)}</div>
+        </section>
+        <section class="panel">
+          <div class="panel-body">
+            <div class="empty-state">
+              <div class="empty-state-icon">📅</div>
+              <div class="empty-state-title">Chưa có lịch trực</div>
+              <div class="empty-state-desc">${isAdmin() ? 'Hãy tạo lịch trực cho tháng này. Slot cuối tuần sẽ được tạo tự động khi refresh.' : 'Chưa có lịch trực cho tháng này. Vui lòng liên hệ admin.'}</div>
+              ${isAdmin() ? '<button class="btn primary" data-action="refresh-db">🔄 Generate Slots</button>' : ''}
+            </div>
+          </div>
+        </section>
+      </div>
+    `;
+  }
+
+  // Filter slots for table
+  const filteredSlots = slotFilter === "ALL" ? slots : slots.filter(s => s.status === slotFilter);
+
   return `
     ${renderActionToolbar()}
     <div class="grid cols-4">
@@ -541,10 +609,15 @@ function renderDashboard() {
       </section>
     </div>
     <section class="panel" style="margin-top:16px">
-      <div class="panel-header">
+      <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
         <h2 class="panel-title">Slot table</h2>
+        <select class="filter-select" data-action="filter-slot">
+          <option value="ALL" ${slotFilter === "ALL" ? "selected" : ""}>All Status</option>
+          <option value="OPEN" ${slotFilter === "OPEN" ? "selected" : ""}>Open</option>
+          <option value="FULL" ${slotFilter === "FULL" ? "selected" : ""}>Full</option>
+        </select>
       </div>
-      <div class="table-wrap">${renderSlotsTable(slots, false)}</div>
+      <div class="table-wrap">${renderSlotsTable(filteredSlots, false)}</div>
     </section>
   `;
 }
@@ -610,9 +683,17 @@ function renderCalendarSlot(slot) {
     statusClass = "assigned";
   }
 
+  // Build detailed tooltip
+  const capacity = getCapacity(slot.slotId);
+  const tooltipLines = [
+    `${slot.title} - ${slot.slotType}`,
+    `Giờ: ${capacity?.hoursPerPerson || 8}h`,
+    names ? `Người trực: ${names}` : `Chưa có ai (${remainingSlots(slot)} slot trống)`
+  ];
+
   const css = `${isHoliday ? "holiday" : ""} ${statusClass}`;
   return `
-    <button class="slot-pill ${css}" data-action="focus-slot" data-slot="${slot.slotId}">
+    <button class="slot-pill ${css}" data-action="focus-slot" data-slot="${slot.slotId}" title="${escapeHtml(tooltipLines.join('\n'))}">
       <span class="slot-name">${escapeHtml(slot.title)}</span>
       <span class="slot-meta ${names ? 'assigned' : ''}">${escapeHtml(names || `${remainingSlots(slot)} open`)}</span>
     </button>
@@ -651,6 +732,27 @@ function renderModal() {
                   .map((user) => `<option value="${user.email}" ${user.email === modal.defaultMemberEmail ? "selected" : ""}>${escapeHtml(user.displayName)} - ${escapeHtml(user.email)}</option>`)
                   .join("")}
               </select>
+            </div>
+          ` : ""}
+          ${modal.type === "admin-manage-slot" && modal.activeRegistrations && modal.activeRegistrations.length > 0 ? `
+            <div style="margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px;">
+              <label style="font-weight: 700; display: block; margin-bottom: 8px;">🔄 Đổi ca trực (Swap)</label>
+              <div class="field" style="margin-bottom:8px">
+                <label>Từ:</label>
+                <select data-action="swap-from-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text)">
+                  ${modal.activeRegistrations.map(reg => `<option value="${reg.userEmail}">${escapeHtml(userLabel(reg.userEmail))}</option>`).join("")}
+                </select>
+              </div>
+              <div class="field" style="margin-bottom:8px">
+                <label>Sang:</label>
+                <select data-action="swap-to-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text)">
+                  ${state.users
+                    .filter(u => u.status === "ACTIVE" && !modal.activeRegistrations.some(r => r.userEmail.toLowerCase() === u.email.toLowerCase()))
+                    .map(u => `<option value="${u.email}">${escapeHtml(u.displayName)}</option>`)
+                    .join("")}
+                </select>
+              </div>
+              <button class="btn small primary" data-action="modal-confirm-swap" data-slot-swap="${modal.slotId}">🔄 Swap</button>
             </div>
           ` : ""}
         </div>
@@ -829,12 +931,95 @@ function renderStats() {
       return { user, regs, hours, manMonth };
     });
 
+  // Render chart after DOM
+  requestAnimationFrame(() => {
+    const ctx = document.getElementById("stats-chart");
+    if (!ctx || typeof Chart === "undefined") return;
+    const labels = rows.map(r => r.user.displayName);
+    const daysData = rows.map(r => r.regs.length);
+    const hoursData = rows.map(r => r.hours);
+
+    const isDark = darkMode;
+    const gridColor = isDark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.08)";
+    const textColor = isDark ? "#c8d8e8" : "#657386";
+
+    new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels,
+        datasets: [
+          {
+            label: "Support Days",
+            data: daysData,
+            backgroundColor: "rgba(31, 122, 109, 0.75)",
+            borderColor: "rgba(31, 122, 109, 1)",
+            borderWidth: 1,
+            borderRadius: 4
+          },
+          {
+            label: "Total Hours",
+            data: hoursData,
+            backgroundColor: "rgba(47, 102, 197, 0.65)",
+            borderColor: "rgba(47, 102, 197, 1)",
+            borderWidth: 1,
+            borderRadius: 4
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: textColor, font: { family: "'Inter', sans-serif" } } }
+        },
+        scales: {
+          x: {
+            ticks: { color: textColor, font: { family: "'Inter', sans-serif", size: 11 } },
+            grid: { color: gridColor }
+          },
+          y: {
+            beginAtZero: true,
+            ticks: { color: textColor, font: { family: "'Inter', sans-serif", size: 11 } },
+            grid: { color: gridColor }
+          }
+        }
+      }
+    });
+  });
+
   return `
     ${renderActionToolbar()}
-    <section class="panel">
-      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+    <div class="split">
+      <section class="panel">
+        <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+          <h2 class="panel-title">📊 Monthly member chart</h2>
+          ${renderMonthSelector()}
+        </div>
+        <div class="panel-body">
+          <div class="chart-container" style="height:320px">
+            <canvas id="stats-chart"></canvas>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Summary</h2>
+        </div>
+        <div class="panel-body">
+          <div class="grid cols-2" style="margin-bottom:16px">
+            ${metric("Total slots", slots.length)}
+            ${metric("Total registrations", rows.reduce((s, r) => s + r.regs.length, 0))}
+          </div>
+          <div class="grid cols-2">
+            ${metric("Total hours", rows.reduce((s, r) => s + r.hours, 0))}
+            ${metric("Total man/month", rows.reduce((s, r) => s + r.manMonth, 0).toFixed(2))}
+          </div>
+        </div>
+      </section>
+    </div>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
         <h2 class="panel-title">Monthly member totals</h2>
-        ${renderMonthSelector()}
       </div>
       <div class="table-wrap">
         <table>
@@ -870,7 +1055,13 @@ function renderStats() {
 }
 
 function renderRequests() {
-  const myRequests = isAdmin() ? state.updateRequests : state.updateRequests.filter((request) => request.userEmail.toLowerCase() === session.email.toLowerCase());
+  let myRequests = isAdmin() ? state.updateRequests : state.updateRequests.filter((request) => request.userEmail.toLowerCase() === session.email.toLowerCase());
+  // Apply filter
+  if (requestFilter !== "ALL") {
+    myRequests = myRequests.filter(r => r.status === requestFilter);
+  }
+  const pendingCount = (isAdmin() ? state.updateRequests : myRequests).filter(r => r.status === "PENDING").length;
+
   return `
     <div class="grid cols-2">
       <section class="panel">
@@ -900,27 +1091,63 @@ function renderRequests() {
         </div>
       </section>
       <section class="panel">
-        <div class="panel-header">
-          <h2 class="panel-title">${isAdmin() ? "All requests" : "My requests"}</h2>
+        <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <h2 class="panel-title">${isAdmin() ? "All requests" : "My requests"} ${pendingCount > 0 ? `<span class="status pending">${pendingCount} pending</span>` : ""}</h2>
+          <div class="toolbar-group">
+            <select class="filter-select" data-action="filter-request">
+              <option value="ALL" ${requestFilter === "ALL" ? "selected" : ""}>All</option>
+              <option value="PENDING" ${requestFilter === "PENDING" ? "selected" : ""}>Pending</option>
+              <option value="APPROVED" ${requestFilter === "APPROVED" ? "selected" : ""}>Approved</option>
+              <option value="REJECTED" ${requestFilter === "REJECTED" ? "selected" : ""}>Rejected</option>
+            </select>
+            ${isAdmin() ? `
+              <button class="btn small primary" data-action="bulk-review" data-status="APPROVED">✅ Bulk Approve</button>
+              <button class="btn small danger" data-action="bulk-review" data-status="REJECTED">❌ Bulk Reject</button>
+            ` : ""}
+          </div>
         </div>
         <div class="panel-body">
           ${myRequests.length ? `
-            <div class="list">
-              ${myRequests.map((request) => `
-                <div class="item">
-                  <div class="item-title">${escapeHtml(request.userEmail)} - ${formatDate(request.targetDate)}</div>
-                  <div class="item-meta">${escapeHtml(request.reason)}</div>
-                  <div class="actions">
-                    <span class="status ${request.status.toLowerCase()}">${request.status}</span>
-                    ${isAdmin() && request.status === "PENDING" ? `
-                      <button class="btn small primary" data-action="review-request" data-request="${request.requestId}" data-status="APPROVED">Approve</button>
-                      <button class="btn small danger" data-action="review-request" data-request="${request.requestId}" data-status="REJECTED">Reject</button>
-                    ` : ""}
-                  </div>
-                </div>
-              `).join("")}
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    ${isAdmin() ? `<th class="checkbox-cell"><input type="checkbox" data-action="bulk-check-all" /></th>` : ""}
+                    <th>User</th>
+                    <th>Date</th>
+                    <th>Hours</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    ${isAdmin() ? "<th>Actions</th>" : ""}
+                  </tr>
+                </thead>
+                <tbody>
+                  ${myRequests.map((request) => `
+                    <tr>
+                      ${isAdmin() ? `<td class="checkbox-cell"><input type="checkbox" data-action="bulk-check" data-request-id="${request.requestId}" ${selectedBulkIds.has(request.requestId) ? "checked" : ""} /></td>` : ""}
+                      <td><strong>${escapeHtml(userLabel(request.userEmail))}</strong></td>
+                      <td>${formatDate(request.targetDate)}</td>
+                      <td>${request.requestedHours}h</td>
+                      <td>${escapeHtml(request.reason)}</td>
+                      <td><span class="status ${request.status.toLowerCase()}">${request.status}</span></td>
+                      ${isAdmin() && request.status === "PENDING" ? `
+                        <td>
+                          <button class="btn small primary" data-action="review-request" data-request="${request.requestId}" data-status="APPROVED">Approve</button>
+                          <button class="btn small danger" data-action="review-request" data-request="${request.requestId}" data-status="REJECTED">Reject</button>
+                        </td>
+                      ` : isAdmin() ? "<td></td>" : ""}
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
             </div>
-          ` : `<div class="empty">No requests yet.</div>`}
+          ` : `
+            <div class="empty-state">
+              <div class="empty-state-icon">📋</div>
+              <div class="empty-state-title">Chưa có yêu cầu</div>
+              <div class="empty-state-desc">Tạo yêu cầu cập nhật giờ trực hoặc thay đổi thông tin ở form bên trái.</div>
+            </div>
+          `}
         </div>
       </section>
     </div>
@@ -929,11 +1156,15 @@ function renderRequests() {
 
 function renderAdminUsers() {
   if (!isAdmin()) return `<div class="error">Admin only.</div>`;
+  const filteredUsers = userSearch
+    ? state.users.filter(u => u.displayName.toLowerCase().includes(userSearch) || u.email.toLowerCase().includes(userSearch))
+    : state.users;
   return `
     <div class="split">
       <section class="panel">
-        <div class="panel-header">
-          <h2 class="panel-title">Users sheet preview</h2>
+        <div class="panel-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+          <h2 class="panel-title">Users (${filteredUsers.length}/${state.users.length})</h2>
+          <input class="search-input" type="text" placeholder="🔍 Search users..." value="${escapeHtml(userSearch)}" data-action="search-user" />
         </div>
         <div class="table-wrap">
           <table>
@@ -948,7 +1179,7 @@ function renderAdminUsers() {
               </tr>
             </thead>
             <tbody>
-              ${state.users.map((user) => `
+              ${filteredUsers.map((user) => `
                 <tr>
                   <td>${escapeHtml(user.userId)}</td>
                   <td>${escapeHtml(user.email)}</td>
@@ -993,7 +1224,9 @@ function renderAdminUsers() {
 }
 
 function renderUserActions(user) {
-  if (user.email.toLowerCase() === ADMIN_EMAIL) return `<span class="muted">Protected admin</span>`;
+  // Protect admin based on DB setting, not hardcoded email
+  const adminEmail = (state.settings?.find(s => s.key === "admin_email")?.value || "hau.nt@kyanon.digital").toLowerCase();
+  if (user.email.toLowerCase() === adminEmail) return `<span class="muted">Protected admin</span>`;
   if (user.status === "ACTIVE") {
     return `<button class="btn small danger" data-action="deactivate-user" data-email="${user.email}">Deactivate</button>`;
   }
@@ -1099,6 +1332,35 @@ function renderAdminSchedule() {
         </div>
       </div>
     </section>
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <h2 class="panel-title">Notification History</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Type</th>
+              <th>Message</th>
+              <th>Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${(state.chatNotifications || []).slice(-20).reverse().map(n => `
+              <tr>
+                <td>${n.sentAt ? new Date(n.sentAt).toLocaleString("vi-VN") : "N/A"}</td>
+                <td>${escapeHtml(n.type || "CHAT")}</td>
+                <td class="notif-message" title="${escapeHtml(n.message || "")}">${escapeHtml((n.message || "").slice(0, 60))}${(n.message || "").length > 60 ? "..." : ""}</td>
+                <td><span class="status ${(n.status || "sent").toLowerCase()}">${n.status || "SENT"}</span></td>
+                <td>${n.status === "FAILED" ? `<button class="btn small" data-action="resend-notif" data-notif-id="${n.notificationId}">Resend</button>` : ""}</td>
+              </tr>
+            `).join("") || `<tr><td colspan="5" class="empty">No notifications yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
   `;
 }
 
@@ -1170,7 +1432,9 @@ function bindShellEvents() {
   });
 
   document.querySelector("[data-action='export-preview']")?.addEventListener("click", () => {
-    window.location.href = `/api/export?month=${selectedMonth}`;
+    let url = `/api/export?month=${selectedMonth}`;
+    if (exportToMonth && exportToMonth > selectedMonth) url += `&toMonth=${exportToMonth}`;
+    window.location.href = url;
   });
 
   document.querySelectorAll("[data-action='focus-slot']").forEach((button) => {
@@ -1238,7 +1502,7 @@ function bindShellEvents() {
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
-      alert("Error submitting request: " + error.message);
+      showToast("Error submitting request: " + error.message, "error");
       render();
     }
   });
@@ -1266,7 +1530,7 @@ function bindShellEvents() {
         render();
       } catch (error) {
         saveStatus = `error: ${error.message}`;
-        alert("Error reviewing request: " + error.message);
+        showToast("Error reviewing request: " + error.message, "error");
         render();
       }
     });
@@ -1299,7 +1563,7 @@ function bindShellEvents() {
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
-      alert("Error adding user: " + error.message);
+      showToast("Error adding user: " + error.message, "error");
       render();
     }
   });
@@ -1327,7 +1591,7 @@ function bindShellEvents() {
         render();
       } catch (error) {
         saveStatus = `error: ${error.message}`;
-        alert("Error updating user status: " + error.message);
+        showToast("Error updating user status: " + error.message, "error");
         render();
       }
     });
@@ -1366,7 +1630,7 @@ function bindShellEvents() {
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
-      alert("Error creating holiday slots: " + error.message);
+      showToast("Error creating holiday slots: " + error.message, "error");
       render();
     }
   });
@@ -1381,13 +1645,13 @@ function bindShellEvents() {
         body: JSON.stringify({ key: "google_chat_webhook_url", value: data.webhookUrl.trim() })
       });
       if (response.ok) {
-        alert("Settings saved successfully.");
+        showToast("Settings saved successfully.");
         await loadStateFromDb(false, selectedMonth);
       } else {
-        alert("Failed to save settings.");
+        showToast("Failed to save settings.", "error");
       }
     } catch (err) {
-      alert("Error saving settings: " + err.message);
+      showToast("Error saving settings: " + err.message, "error");
     }
   });
 
@@ -1398,12 +1662,12 @@ function bindShellEvents() {
       const response = await fetch("/api/chat/test", { method: "POST" });
       const data = await response.json();
       if (response.ok && data.ok) {
-        alert("Test message sent successfully. Please check your Google Chat space!");
+        showToast("Test message sent! Check Google Chat.");
       } else {
-        alert("Failed to send test message. Check that the webhook URL is correct.");
+        showToast("Failed to send test. Check webhook URL.", "error");
       }
     } catch (err) {
-      alert("Error sending test message: " + err.message);
+      showToast("Error: " + err.message, "error");
     } finally {
       btn.disabled = false;
     }
@@ -1416,19 +1680,303 @@ function bindShellEvents() {
       const response = await fetch("/api/chat/trigger-reminders", { method: "POST" });
       const data = await response.json();
       if (response.ok && data.ok) {
-        alert(`Reminders triggered! Sent: ${data.sentCount} notifications, Open slots warned: ${data.openCount}.`);
+        showToast(`Reminders sent: ${data.sentCount}, Open warned: ${data.openCount}`);
         await loadStateFromDb(false, selectedMonth);
       } else {
-        alert("Failed to trigger reminders.");
+        showToast("Failed to trigger reminders.", "error");
       }
     } catch (err) {
-      alert("Error triggering reminders: " + err.message);
+      showToast("Error: " + err.message, "error");
     } finally {
       btn.disabled = false;
     }
   });
 
+  // ===== New Event Handlers =====
+
+  // Sidebar toggle (mobile)
+  document.querySelector("[data-action='toggle-sidebar']")?.addEventListener("click", () => {
+    sidebarOpen = !sidebarOpen;
+    document.querySelector(".sidebar")?.classList.toggle("open", sidebarOpen);
+    document.querySelector(".sidebar-overlay")?.classList.toggle("show", sidebarOpen);
+  });
+  document.querySelector("[data-action='close-sidebar']")?.addEventListener("click", () => {
+    sidebarOpen = false;
+    document.querySelector(".sidebar")?.classList.remove("open");
+    document.querySelector(".sidebar-overlay")?.classList.remove("show");
+  });
+
+  // Dark mode toggle
+  document.querySelector("[data-action='toggle-theme']")?.addEventListener("click", () => {
+    darkMode = !darkMode;
+    localStorage.setItem("ot-dark-mode", darkMode);
+    document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "");
+    render();
+  });
+
+  // Slot status filter
+  document.querySelector("[data-action='filter-slot']")?.addEventListener("change", (e) => {
+    slotFilter = e.target.value;
+    render();
+  });
+
+  // Request status filter
+  document.querySelector("[data-action='filter-request']")?.addEventListener("change", (e) => {
+    requestFilter = e.target.value;
+    render();
+  });
+
+  // User search
+  document.querySelector("[data-action='search-user']")?.addEventListener("input", (e) => {
+    userSearch = e.target.value.toLowerCase();
+    render();
+  });
+
+  // Export to-month range
+  document.querySelector("[data-action='set-export-to-month']")?.addEventListener("change", (e) => {
+    exportToMonth = e.target.value;
+  });
+
+  // Swap ca trực (Admin)
+  document.querySelector("[data-action='modal-confirm-swap']")?.addEventListener("click", async () => {
+    if (!modal?.slotId) return;
+    const slotId = modal.slotId;
+    const fromSelect = document.querySelector("[data-action='swap-from-select']");
+    const toSelect = document.querySelector("[data-action='swap-to-select']");
+    const fromEmail = fromSelect?.value;
+    const toEmail = toSelect?.value;
+    if (!fromEmail || !toEmail) return;
+    modal = null;
+    try {
+      saveStatus = "saving";
+      render();
+      const response = await fetch("/api/slots/swap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slotId, fromEmail, toEmail })
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot swap.");
+      state = { ...emptyState(), ...payload.state };
+      saveStatus = "saved";
+      showToast("Đổi ca trực thành công!");
+      render();
+    } catch (error) {
+      saveStatus = `error: ${error.message}`;
+      showToast("Lỗi đổi ca: " + error.message, "error");
+      render();
+    }
+  });
+
+  // Bulk review
+  document.querySelectorAll("[data-action='bulk-check']").forEach(cb => {
+    cb.addEventListener("change", (e) => {
+      if (e.target.checked) selectedBulkIds.add(e.target.dataset.requestId);
+      else selectedBulkIds.delete(e.target.dataset.requestId);
+    });
+  });
+  document.querySelector("[data-action='bulk-check-all']")?.addEventListener("change", (e) => {
+    const checkboxes = document.querySelectorAll("[data-action='bulk-check']");
+    checkboxes.forEach(cb => {
+      cb.checked = e.target.checked;
+      if (e.target.checked) selectedBulkIds.add(cb.dataset.requestId);
+      else selectedBulkIds.delete(cb.dataset.requestId);
+    });
+  });
+  document.querySelectorAll("[data-action='bulk-review']").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const status = btn.dataset.status;
+      if (selectedBulkIds.size === 0) return showToast("Chọn ít nhất 1 request.", "warning");
+      try {
+        saveStatus = "saving";
+        render();
+        const response = await fetch("/api/update-requests/bulk-review", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestIds: [...selectedBulkIds], status })
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || "Bulk review failed.");
+        state = { ...emptyState(), ...payload.state };
+        selectedBulkIds.clear();
+        saveStatus = "saved";
+        showToast(`Đã ${status === "APPROVED" ? "phê duyệt" : "từ chối"} ${payload.processed} requests.`);
+        render();
+      } catch (error) {
+        saveStatus = `error: ${error.message}`;
+        showToast("Error: " + error.message, "error");
+        render();
+      }
+    });
+  });
+
+  // Resend notification
+  document.querySelectorAll("[data-action='resend-notif']").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.notifId;
+      try {
+        const response = await fetch("/api/chat/resend", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ notificationId: id })
+        });
+        const data = await response.json();
+        if (data.ok) showToast("Đã gửi lại thông báo!");
+        else showToast("Gửi lại thất bại.", "error");
+      } catch (err) {
+        showToast("Error: " + err.message, "error");
+      }
+    });
+  });
+
+  // Confirm review request (modal version)
+  document.querySelector("[data-action='modal-confirm-review']")?.addEventListener("click", async () => {
+    if (!modal?.requestId) return;
+    const requestId = modal.requestId;
+    const status = modal.reviewStatus;
+    modal = null;
+    try {
+      saveStatus = "saving";
+      render();
+      const response = await fetch("/api/update-requests/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requestId, status })
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot review.");
+      state = { ...emptyState(), ...payload.state };
+      saveStatus = "saved";
+      showToast(`Yêu cầu đã được ${status === "APPROVED" ? "Phê duyệt" : "Từ chối"}!`);
+      render();
+    } catch (error) {
+      saveStatus = `error: ${error.message}`;
+      showToast("Error: " + error.message, "error");
+      render();
+    }
+  });
+
 }
+
+// ===== Profile View =====
+function renderProfile() {
+  const allSlots = state.scheduleSlots || [];
+  const allRegs = (state.registrations || []).filter(r => r.userEmail.toLowerCase() === session.email.toLowerCase() && r.status === "ACTIVE");
+  const allRequests = (state.updateRequests || []).filter(r => r.userEmail.toLowerCase() === session.email.toLowerCase());
+
+  const totalDays = allRegs.length;
+  const totalHours = allRegs.reduce((sum, r) => sum + getRegistrationHours(r), 0);
+  const totalManMonth = allRegs.reduce((sum, r) => sum + getRegistrationManMonth(r), 0);
+
+  return `
+    <div class="profile-stats">
+      ${metric("Tổng ngày trực", totalDays)}
+      ${metric("Tổng giờ", totalHours)}
+      ${metric("Man/month factor", totalManMonth.toFixed(2))}
+    </div>
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">Lịch sử đăng ký (tháng ${selectedMonth})</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Ngày</th><th>Loại</th><th>Giờ</th><th>Trạng thái</th></tr></thead>
+          <tbody>
+            ${allRegs.length ? allRegs.map(r => {
+              const slot = allSlots.find(s => s.slotId === r.slotId);
+              return `<tr>
+                <td><strong>${slot ? formatDate(slot.date) : "N/A"}</strong></td>
+                <td>${slot?.slotType || ""}</td>
+                <td>${getRegistrationHours(r)}h</td>
+                <td><span class="status active">ACTIVE</span></td>
+              </tr>`;
+            }).join("") : `<tr><td colspan="4" class="empty">Chưa có đăng ký trong tháng này.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <h2 class="panel-title">Yêu cầu cập nhật của tôi</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Ngày</th><th>Giờ</th><th>Lý do</th><th>Trạng thái</th></tr></thead>
+          <tbody>
+            ${allRequests.length ? allRequests.map(r => `
+              <tr>
+                <td>${formatDate(r.targetDate)}</td>
+                <td>${r.requestedHours}h</td>
+                <td>${escapeHtml(r.reason)}</td>
+                <td><span class="status ${r.status.toLowerCase()}">${r.status}</span></td>
+              </tr>
+            `).join("") : `<tr><td colspan="4" class="empty">Chưa có yêu cầu.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+// ===== SSE Connection =====
+function connectSSE() {
+  if (sseSource) return;
+  try {
+    sseSource = new EventSource("/api/events");
+    sseSource.addEventListener("registration", (e) => {
+      const data = JSON.parse(e.data);
+      if (data.action === "register") {
+        showToast(`${data.displayName} đã đăng ký trực ngày ${data.date}`, "info");
+      } else if (data.action === "cancel") {
+        showToast(`${data.displayName} đã hủy đăng ký ngày ${data.date}`, "warning");
+      } else if (data.action === "swap") {
+        showToast(`Đổi ca: ${data.fromEmail} → ${data.toEmail}`, "info");
+      }
+      loadStateFromDb(false, selectedMonth, true);
+    });
+    sseSource.addEventListener("review", (e) => {
+      const data = JSON.parse(e.data);
+      showToast(`${data.count} requests đã được ${data.status === "APPROVED" ? "phê duyệt" : "từ chối"}`, "info");
+      loadStateFromDb(false, selectedMonth, true);
+    });
+    sseSource.onerror = () => {
+      sseSource?.close();
+      sseSource = null;
+      setTimeout(connectSSE, 5000);
+    };
+  } catch (e) {
+    console.warn("SSE not available:", e);
+  }
+}
+
+// ===== Keyboard Shortcuts =====
+document.addEventListener("keydown", (e) => {
+  if (!session || e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA" || e.target.tagName === "SELECT") return;
+
+  if (e.key === "ArrowLeft") {
+    const date = parseLocalDate(`${selectedMonth}-01`);
+    date.setMonth(date.getMonth() - 1);
+    selectedMonth = monthKey(date);
+    loadStateFromDb(false, selectedMonth);
+  }
+  if (e.key === "ArrowRight") {
+    const date = parseLocalDate(`${selectedMonth}-01`);
+    date.setMonth(date.getMonth() + 1);
+    selectedMonth = monthKey(date);
+    loadStateFromDb(false, selectedMonth);
+  }
+  if (e.key === "t" || e.key === "T") {
+    selectedMonth = monthKey(new Date());
+    loadStateFromDb(false, selectedMonth);
+  }
+  if (e.key === "r" || e.key === "R") {
+    loadStateFromDb(true, selectedMonth);
+  }
+  if (e.key === "Escape") {
+    if (modal) { modal = null; render(); }
+    if (sidebarOpen) { sidebarOpen = false; render(); }
+  }
+});
 
 function userLabel(email) {
   const user = state.users.find((item) => item.email.toLowerCase() === email.toLowerCase());
