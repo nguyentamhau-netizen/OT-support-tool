@@ -161,7 +161,7 @@ function dayName(date) {
 
 function formatDate(value) {
   const date = typeof value === "string" ? parseLocalDate(value) : value;
-  return new Intl.DateTimeFormat("vi-VN", {
+  return new Intl.DateTimeFormat("en-US", {
     weekday: "short",
     day: "2-digit",
     month: "2-digit",
@@ -171,7 +171,7 @@ function formatDate(value) {
 
 function formatDateLong(value) {
   const date = typeof value === "string" ? parseLocalDate(value) : value;
-  return new Intl.DateTimeFormat("vi-VN", {
+  return new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     day: "2-digit",
     month: "long",
@@ -264,11 +264,11 @@ async function registerSlot(slotId, userEmail) {
       ...payload.state
     };
     saveStatus = "saved";
-    showToast("Đăng ký ca trực thành công!");
+    showToast("Registration successful!");
     render();
   } catch (error) {
     saveStatus = `error: ${error.message}`;
-    modal = { type: "info", title: "Không thể đăng ký", message: error.message, primary: { label: "Close", action: "modal-close" } };
+    modal = { type: "info", title: "Cannot Register", message: error.message, primary: { label: "Close", action: "modal-close" } };
     render();
   }
 }
@@ -289,11 +289,11 @@ async function cancelRegistration(registrationId) {
       ...payload.state
     };
     saveStatus = "saved";
-    showToast("Đã hủy đăng ký ca trực!");
+    showToast("Registration cancelled!");
     render();
   } catch (error) {
     saveStatus = `error: ${error.message}`;
-    modal = { type: "info", title: "Không thể hủy đăng ký", message: error.message, primary: { label: "Close", action: "modal-close" } };
+    modal = { type: "info", title: "Cannot Cancel", message: error.message, primary: { label: "Close", action: "modal-close" } };
     render();
   }
 }
@@ -317,7 +317,7 @@ function render() {
       <div class="login-panel" style="min-height:100vh">
         <div class="login-box">
           <h2>Loading OT Support Database</h2>
-          <p class="muted">Đang tải dữ liệu từ Taiga và Cơ sở dữ liệu...</p>
+          <p class="muted">Loading data from Taiga and local database...</p>
           <div class="grid cols-4" style="margin-top:20px">
             <div class="skeleton skeleton-metric"></div>
             <div class="skeleton skeleton-metric"></div>
@@ -334,9 +334,9 @@ function render() {
     app.innerHTML = `
       <div class="login-panel" style="min-height:100vh">
         <div class="login-box">
-          <h2>Cơ sở dữ liệu chưa kết nối</h2>
+          <h2>Database Not Connected</h2>
           <div class="error">${escapeHtml(bootstrapError)}</div>
-          <p class="muted">Không thể tải dữ liệu. Hãy kiểm tra kết nối mạng hoặc cấu hình API Taiga trong file <strong>.env</strong>, sau đó khởi động lại server.</p>
+          <p class="muted">Cannot load data. Please check your network connection or Taiga API configuration in <strong>.env</strong>, then restart the server.</p>
           <button class="btn primary" data-action="retry-bootstrap">Retry</button>
         </div>
       </div>
@@ -431,12 +431,12 @@ function renderLogin(message = "") {
       <section class="login-panel">
         <div class="login-box">
           <h2>Sign in</h2>
-          <p class="muted">Đăng nhập bằng tài khoản Taiga của bạn.</p>
+          <p class="muted">Sign in with your Taiga account.</p>
           ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
           <form class="form" id="login-form">
             <div class="field">
               <label for="email">Taiga Username / Email</label>
-              <input id="email" name="email" type="text" placeholder="Username hoặc Email" required />
+              <input id="email" name="email" type="text" placeholder="Username or Email" required />
             </div>
             <div class="field">
               <label for="password">Taiga Password</label>
@@ -487,7 +487,7 @@ function renderActionToolbar() {
     <div class="toolbar">
       <div class="toolbar-group">
         <div class="export-range">
-          <label>Đến tháng:</label>
+          <label>To month:</label>
           <input type="month" value="${exportToMonth}" data-action="set-export-to-month" />
         </div>
       </div>
@@ -507,20 +507,20 @@ function renderMonthSelector() {
   let monthOptions = "";
   for (let m = 1; m <= 12; m++) {
     const monthVal = `${m}`.padStart(2, "0");
-    monthOptions += `<option value="${monthVal}" ${m === month ? "selected" : ""}>Tháng ${m}</option>`;
+    monthOptions += `<option value="${monthVal}" ${m === month ? "selected" : ""}>Month ${m}</option>`;
   }
   
   let yearOptions = "";
   const currentYear = new Date().getFullYear();
   for (let y = currentYear - 2; y <= currentYear + 3; y++) {
-    yearOptions += `<option value="${y}" ${y === year ? "selected" : ""}>Năm ${y}</option>`;
+    yearOptions += `<option value="${y}" ${y === year ? "selected" : ""}>Year ${y}</option>`;
   }
 
   return `
     <div class="month-selector-container">
-      <button class="today-btn" type="button" data-action="today-month">Hôm nay</button>
+      <button class="today-btn" type="button" data-action="today-month">Today</button>
       <div class="nav-divider"></div>
-      <button class="nav-btn" type="button" data-action="prev-month" title="Tháng trước">
+      <button class="nav-btn" type="button" data-action="prev-month" title="Previous month">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
       </button>
       <div class="select-wrapper">
@@ -533,7 +533,7 @@ function renderMonthSelector() {
           ${yearOptions}
         </select>
       </div>
-      <button class="nav-btn" type="button" data-action="next-month" title="Tháng sau">
+      <button class="nav-btn" type="button" data-action="next-month" title="Next month">
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
       </button>
     </div>
@@ -549,7 +549,7 @@ function renderDashboard() {
   }, 0);
 
   const [year, month] = selectedMonth.split("-");
-  const displayLabel = `Tháng ${parseInt(month, 10)} - ${year}`;
+  const displayLabel = `Month ${parseInt(month, 10)} - ${year}`;
 
   if (slots.length === 0) {
     return `
@@ -572,8 +572,8 @@ function renderDashboard() {
           <div class="panel-body">
             <div class="empty-state">
               <div class="empty-state-icon">📅</div>
-              <div class="empty-state-title">Chưa có lịch trực</div>
-              <div class="empty-state-desc">${isAdmin() ? 'Hãy tạo lịch trực cho tháng này. Slot cuối tuần sẽ được tạo tự động khi refresh.' : 'Chưa có lịch trực cho tháng này. Vui lòng liên hệ admin.'}</div>
+              <div class="empty-state-title">No schedule yet</div>
+              <div class="empty-state-desc">${isAdmin() ? 'Create a schedule for this month. Weekend slots will be auto-generated on refresh.' : 'No schedule for this month. Please contact admin.'}</div>
               ${isAdmin() ? '<button class="btn primary" data-action="refresh-db">🔄 Generate Slots</button>' : ''}
             </div>
           </div>
@@ -603,7 +603,7 @@ function renderDashboard() {
       </section>
       <section class="panel">
         <div class="panel-header">
-          <h2 class="panel-title">Nhắc lịch trực</h2>
+          <h2 class="panel-title">Upcoming Reminders</h2>
         </div>
         <div class="panel-body">${renderReminderPreview(slots)}</div>
       </section>
@@ -687,8 +687,8 @@ function renderCalendarSlot(slot) {
   const capacity = getCapacity(slot.slotId);
   const tooltipLines = [
     `${slot.title} - ${slot.slotType}`,
-    `Giờ: ${capacity?.hoursPerPerson || 8}h`,
-    names ? `Người trực: ${names}` : `Chưa có ai (${remainingSlots(slot)} slot trống)`
+    `Hours: ${capacity?.hoursPerPerson || 8}h`,
+    names ? `Assigned: ${names}` : `No one assigned (${remainingSlots(slot)} slots open)`
   ];
 
   const css = `${isHoliday ? "holiday" : ""} ${statusClass}`;
@@ -712,12 +712,12 @@ function renderModal() {
           <p>${escapeHtml(modal.message)}</p>
           ${modal.activeRegistrations && modal.activeRegistrations.length > 0 ? `
             <div class="active-regs-section" style="margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px;">
-              <label style="font-weight: 700; display: block; margin-bottom: 8px;">Thành viên đang đăng ký:</label>
+              <label style="font-weight: 700; display: block; margin-bottom: 8px;">Currently registered members:</label>
               <div style="display: flex; flex-direction: column; gap: 8px; max-height: 150px; overflow-y: auto;">
                 ${modal.activeRegistrations.map(reg => `
                   <div style="display: flex; align-items: center; justify-content: space-between; background: var(--bg); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--line);">
                     <span style="font-size: 14px; font-weight: 600;">${escapeHtml(userLabel(reg.userEmail))}</span>
-                    <button class="btn small danger" data-action="admin-cancel-reg" data-reg-id="${reg.registrationId}">Hủy</button>
+                    <button class="btn small danger" data-action="admin-cancel-reg" data-reg-id="${reg.registrationId}">Cancel</button>
                   </div>
                 `).join("")}
               </div>
@@ -725,7 +725,7 @@ function renderModal() {
           ` : ""}
           ${modal.memberSelect ? `
             <div class="field" style="margin-top:14px">
-              <label>Đăng ký cho thành viên</label>
+              <label>Register for member</label>
               <select data-action="modal-member-select">
                 ${state.users
                   .filter((user) => user.status === "ACTIVE")
@@ -736,15 +736,15 @@ function renderModal() {
           ` : ""}
           ${modal.type === "admin-manage-slot" && modal.activeRegistrations && modal.activeRegistrations.length > 0 ? `
             <div style="margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px;">
-              <label style="font-weight: 700; display: block; margin-bottom: 8px;">🔄 Đổi ca trực (Swap)</label>
+              <label style="font-weight: 700; display: block; margin-bottom: 8px;">🔄 Swap Shift</label>
               <div class="field" style="margin-bottom:8px">
-                <label>Từ:</label>
+                <label>From:</label>
                 <select data-action="swap-from-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text)">
                   ${modal.activeRegistrations.map(reg => `<option value="${reg.userEmail}">${escapeHtml(userLabel(reg.userEmail))}</option>`).join("")}
                 </select>
               </div>
               <div class="field" style="margin-bottom:8px">
-                <label>Sang:</label>
+                <label>To:</label>
                 <select data-action="swap-to-select" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text)">
                   ${state.users
                     .filter(u => u.status === "ACTIVE" && !modal.activeRegistrations.some(r => r.userEmail.toLowerCase() === u.email.toLowerCase()))
@@ -774,13 +774,13 @@ function openSlotModal(slotId) {
     modal = {
       type: "admin-manage-slot",
       slotId,
-      title: "Admin quản lý slot",
-      message: `Thông tin slot trực ngày ${formatDateLong(slot.date)}.`,
+      title: "Admin Slot Management",
+      message: `Slot details for ${formatDateLong(slot.date)}.`,
       activeRegistrations: regs,
       memberSelect: remainingSlots(slot) > 0,
       defaultMemberEmail: session.email,
-      primary: remainingSlots(slot) > 0 ? { label: "Đăng ký", action: "modal-confirm-register" } : null,
-      secondary: { label: "Đóng", action: "modal-close" }
+      primary: remainingSlots(slot) > 0 ? { label: "Register", action: "modal-confirm-register" } : null,
+      secondary: { label: "Close", action: "modal-close" }
     };
     render();
     return;
@@ -791,8 +791,8 @@ function openSlotModal(slotId) {
     if (isPastDate(slot.date)) {
       modal = {
         type: "info",
-        title: "Không thể hủy đăng ký",
-        message: "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request.",
+        title: "Cannot Cancel Registration",
+        message: "This date has passed. If you need changes, please create an update request.",
         primary: { label: "Close", action: "modal-close" }
       };
       render();
@@ -802,8 +802,8 @@ function openSlotModal(slotId) {
     modal = {
       type: "cancel-registration",
       registrationId: ownRegistration.registrationId,
-      title: "Hủy đăng ký",
-      message: `Bạn muốn hủy đăng ký trực ${formatDateLong(slot.date)}?`,
+      title: "Cancel Registration",
+      message: `Do you want to cancel your registration for ${formatDateLong(slot.date)}?`,
       primary: { label: "Yes", action: "modal-confirm-cancel" },
       secondary: { label: "No", action: "modal-close" }
     };
@@ -814,8 +814,8 @@ function openSlotModal(slotId) {
   if (isPastDate(slot.date)) {
     modal = {
       type: "info",
-      title: "Không thể đăng ký",
-      message: "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request.",
+      title: "Cannot Register",
+      message: "This date has passed. If you need changes, please create an update request.",
       primary: { label: "Close", action: "modal-close" }
     };
     render();
@@ -826,8 +826,8 @@ function openSlotModal(slotId) {
     const names = getActiveRegistrations(slotId).map((registration) => userLabel(registration.userEmail)).join(", ");
     modal = {
       type: "info",
-      title: "Slot đã có người đăng ký",
-      message: `${formatDateLong(slot.date)} đã đủ slot${names ? `: ${names}` : "."}`,
+      title: "Slot Already Full",
+      message: `${formatDateLong(slot.date)} is fully booked${names ? `: ${names}` : "."}`,
       primary: { label: "Close", action: "modal-close" }
     };
     render();
@@ -839,8 +839,8 @@ function openSlotModal(slotId) {
     const existingSlot = state.scheduleSlots.find((item) => item.slotId === existingRegistration.slotId);
     modal = {
       type: "info",
-      title: "Đã đăng ký trong tháng",
-      message: `Bạn đã đăng ký trực ${formatDateLong(existingSlot.date)} rồi.`,
+      title: "Already Registered This Month",
+      message: `You have already registered for ${formatDateLong(existingSlot.date)}.`,
       primary: { label: "Close", action: "modal-close" }
     };
     render();
@@ -850,8 +850,8 @@ function openSlotModal(slotId) {
   modal = {
     type: "register-slot",
     slotId,
-    title: "Xác nhận đăng ký",
-    message: `Bạn muốn đăng ký trực ${formatDateLong(slot.date)} phải không?`,
+    title: "Confirm Registration",
+    message: `Do you want to register for support on ${formatDateLong(slot.date)}?`,
     primary: { label: "Yes", action: "modal-confirm-register" },
     secondary: { label: "No", action: "modal-close" }
   };
@@ -862,15 +862,15 @@ function renderReminderPreview(slots) {
   const upcoming = slots
     .filter((slot) => !isPastDate(slot.date))
     .slice(0, 5);
-  if (!upcoming.length) return `<div class="empty">Không có lịch nhắc sắp tới.</div>`;
+  if (!upcoming.length) return `<div class="empty">No upcoming reminders.</div>`;
   return `
     <div class="list">
       ${upcoming.map((slot) => {
-        const names = getActiveRegistrations(slot.slotId).map((registration) => userLabel(registration.userEmail)).join(", ") || "Chưa có người đăng ký";
+        const names = getActiveRegistrations(slot.slotId).map((registration) => userLabel(registration.userEmail)).join(", ") || "No one registered";
         return `
           <div class="item">
             <div class="item-title">${formatDate(slot.date)}</div>
-            <div class="item-meta">Ngày ${formatDateLong(slot.date)}: ${escapeHtml(names)} sẽ support SOS dự án Amaze.</div>
+            <div class="item-meta">${formatDateLong(slot.date)}: ${escapeHtml(names)} will support Amaze project.</div>
           </div>
         `;
       }).join("")}
@@ -1144,8 +1144,8 @@ function renderRequests() {
           ` : `
             <div class="empty-state">
               <div class="empty-state-icon">📋</div>
-              <div class="empty-state-title">Chưa có yêu cầu</div>
-              <div class="empty-state-desc">Tạo yêu cầu cập nhật giờ trực hoặc thay đổi thông tin ở form bên trái.</div>
+              <div class="empty-state-title">No requests yet</div>
+              <div class="empty-state-desc">Create an update request to adjust hours or change info using the form on the left.</div>
             </div>
           `}
         </div>
@@ -1328,7 +1328,7 @@ function renderAdminSchedule() {
           </div>
         </form>
         <div class="notice" style="margin-top: 14px; margin-bottom: 0;">
-          Cấu hình Webhook URL của Google Chat để gửi cảnh báo tự động khi đăng ký, hủy trực hoặc duyệt yêu cầu, và gửi nhắc lịch hàng ngày lúc 17:00.
+          Configure the Google Chat Webhook URL to send automatic alerts on registration, cancellation, review actions, and daily 5:00 PM reminders.
         </div>
       </div>
     </section>
@@ -1350,7 +1350,7 @@ function renderAdminSchedule() {
           <tbody>
             ${(state.chatNotifications || []).slice(-20).reverse().map(n => `
               <tr>
-                <td>${n.sentAt ? new Date(n.sentAt).toLocaleString("vi-VN") : "N/A"}</td>
+                <td>${n.sentAt ? new Date(n.sentAt).toLocaleString("en-US") : "N/A"}</td>
                 <td>${escapeHtml(n.type || "CHAT")}</td>
                 <td class="notif-message" title="${escapeHtml(n.message || "")}">${escapeHtml((n.message || "").slice(0, 60))}${(n.message || "").length > 60 ? "..." : ""}</td>
                 <td><span class="status ${(n.status || "sent").toLowerCase()}">${n.status || "SENT"}</span></td>
@@ -1498,7 +1498,7 @@ function bindShellEvents() {
         ...payload.state
       };
       saveStatus = "saved";
-      showToast("Gửi yêu cầu cập nhật thành công!");
+      showToast("Update request submitted successfully!");
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
@@ -1526,7 +1526,7 @@ function bindShellEvents() {
           ...payload.state
         };
         saveStatus = "saved";
-        showToast(`Yêu cầu đã được ${status === "APPROVED" ? "Phê duyệt" : "Từ chối"}!`);
+        showToast(`Request ${status === "APPROVED" ? "approved" : "rejected"} successfully!`);
         render();
       } catch (error) {
         saveStatus = `error: ${error.message}`;
@@ -1559,7 +1559,7 @@ function bindShellEvents() {
         ...payload.state
       };
       saveStatus = "saved";
-      showToast("Thêm thành viên thành công!");
+      showToast("User added successfully!");
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
@@ -1587,7 +1587,7 @@ function bindShellEvents() {
           ...payload.state
         };
         saveStatus = "saved";
-        showToast(`${status === "ACTIVE" ? "Kích hoạt" : "Khóa"} thành viên thành công!`);
+        showToast(`User ${status === "ACTIVE" ? "activated" : "deactivated"} successfully!`);
         render();
       } catch (error) {
         saveStatus = `error: ${error.message}`;
@@ -1626,7 +1626,7 @@ function bindShellEvents() {
       };
       selectedMonth = data.startDate.slice(0, 7);
       saveStatus = "saved";
-      showToast("Tạo các ca trực ngày lễ thành công!");
+      showToast("Holiday slots created successfully!");
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
@@ -1759,11 +1759,11 @@ function bindShellEvents() {
       if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot swap.");
       state = { ...emptyState(), ...payload.state };
       saveStatus = "saved";
-      showToast("Đổi ca trực thành công!");
+      showToast("Shift swapped successfully!");
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
-      showToast("Lỗi đổi ca: " + error.message, "error");
+      showToast("Swap error: " + error.message, "error");
       render();
     }
   });
@@ -1786,7 +1786,7 @@ function bindShellEvents() {
   document.querySelectorAll("[data-action='bulk-review']").forEach(btn => {
     btn.addEventListener("click", async () => {
       const status = btn.dataset.status;
-      if (selectedBulkIds.size === 0) return showToast("Chọn ít nhất 1 request.", "warning");
+      if (selectedBulkIds.size === 0) return showToast("Select at least 1 request.", "warning");
       try {
         saveStatus = "saving";
         render();
@@ -1800,7 +1800,7 @@ function bindShellEvents() {
         state = { ...emptyState(), ...payload.state };
         selectedBulkIds.clear();
         saveStatus = "saved";
-        showToast(`Đã ${status === "APPROVED" ? "phê duyệt" : "từ chối"} ${payload.processed} requests.`);
+        showToast(`${status === "APPROVED" ? "Approved" : "Rejected"} ${payload.processed} requests.`);
         render();
       } catch (error) {
         saveStatus = `error: ${error.message}`;
@@ -1821,8 +1821,8 @@ function bindShellEvents() {
           body: JSON.stringify({ notificationId: id })
         });
         const data = await response.json();
-        if (data.ok) showToast("Đã gửi lại thông báo!");
-        else showToast("Gửi lại thất bại.", "error");
+        if (data.ok) showToast("Notification resent!");
+        else showToast("Resend failed.", "error");
       } catch (err) {
         showToast("Error: " + err.message, "error");
       }
@@ -1847,7 +1847,7 @@ function bindShellEvents() {
       if (!response.ok || !payload.ok) throw new Error(payload.error || "Cannot review.");
       state = { ...emptyState(), ...payload.state };
       saveStatus = "saved";
-      showToast(`Yêu cầu đã được ${status === "APPROVED" ? "Phê duyệt" : "Từ chối"}!`);
+      showToast(`Request ${status === "APPROVED" ? "approved" : "rejected"} successfully!`);
       render();
     } catch (error) {
       saveStatus = `error: ${error.message}`;
@@ -1870,17 +1870,17 @@ function renderProfile() {
 
   return `
     <div class="profile-stats">
-      ${metric("Tổng ngày trực", totalDays)}
-      ${metric("Tổng giờ", totalHours)}
+      ${metric("Total support days", totalDays)}
+      ${metric("Total hours", totalHours)}
       ${metric("Man/month factor", totalManMonth.toFixed(2))}
     </div>
     <section class="panel">
       <div class="panel-header">
-        <h2 class="panel-title">Lịch sử đăng ký (tháng ${selectedMonth})</h2>
+        <h2 class="panel-title">Registration History (${selectedMonth})</h2>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Ngày</th><th>Loại</th><th>Giờ</th><th>Trạng thái</th></tr></thead>
+          <thead><tr><th>Date</th><th>Type</th><th>Hours</th><th>Status</th></tr></thead>
           <tbody>
             ${allRegs.length ? allRegs.map(r => {
               const slot = allSlots.find(s => s.slotId === r.slotId);
@@ -1890,18 +1890,18 @@ function renderProfile() {
                 <td>${getRegistrationHours(r)}h</td>
                 <td><span class="status active">ACTIVE</span></td>
               </tr>`;
-            }).join("") : `<tr><td colspan="4" class="empty">Chưa có đăng ký trong tháng này.</td></tr>`}
+            }).join("") : `<tr><td colspan="4" class="empty">No registrations this month.</td></tr>`}
           </tbody>
         </table>
       </div>
     </section>
     <section class="panel" style="margin-top:16px">
       <div class="panel-header">
-        <h2 class="panel-title">Yêu cầu cập nhật của tôi</h2>
+        <h2 class="panel-title">My Update Requests</h2>
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Ngày</th><th>Giờ</th><th>Lý do</th><th>Trạng thái</th></tr></thead>
+          <thead><tr><th>Date</th><th>Hours</th><th>Reason</th><th>Status</th></tr></thead>
           <tbody>
             ${allRequests.length ? allRequests.map(r => `
               <tr>
@@ -1910,7 +1910,7 @@ function renderProfile() {
                 <td>${escapeHtml(r.reason)}</td>
                 <td><span class="status ${r.status.toLowerCase()}">${r.status}</span></td>
               </tr>
-            `).join("") : `<tr><td colspan="4" class="empty">Chưa có yêu cầu.</td></tr>`}
+            `).join("") : `<tr><td colspan="4" class="empty">No requests yet.</td></tr>`}
           </tbody>
         </table>
       </div>
@@ -1926,17 +1926,17 @@ function connectSSE() {
     sseSource.addEventListener("registration", (e) => {
       const data = JSON.parse(e.data);
       if (data.action === "register") {
-        showToast(`${data.displayName} đã đăng ký trực ngày ${data.date}`, "info");
+        showToast(`${data.displayName} registered for ${data.date}`, "info");
       } else if (data.action === "cancel") {
-        showToast(`${data.displayName} đã hủy đăng ký ngày ${data.date}`, "warning");
+        showToast(`${data.displayName} cancelled registration for ${data.date}`, "warning");
       } else if (data.action === "swap") {
-        showToast(`Đổi ca: ${data.fromEmail} → ${data.toEmail}`, "info");
+        showToast(`Shift swap: ${data.fromEmail} → ${data.toEmail}`, "info");
       }
       loadStateFromDb(false, selectedMonth, true);
     });
     sseSource.addEventListener("review", (e) => {
       const data = JSON.parse(e.data);
-      showToast(`${data.count} requests đã được ${data.status === "APPROVED" ? "phê duyệt" : "từ chối"}`, "info");
+      showToast(`${data.count} requests ${data.status === "APPROVED" ? "approved" : "rejected"}`, "info");
       loadStateFromDb(false, selectedMonth, true);
     });
     sseSource.onerror = () => {
@@ -2165,10 +2165,10 @@ function getHolidayLabel(date) {
   const y = date.getFullYear();
   
   // 1. Check solar holidays
-  if (d === 1 && m === 1) return "Tết Dương Lịch";
-  if (d === 30 && m === 4) return "Giải Phóng Miền Nam";
-  if (d === 1 && m === 5) return "Quốc Tế Lao Động";
-  if (d === 2 && m === 9) return "Quốc Khánh";
+  if (d === 1 && m === 1) return "New Year's Day";
+  if (d === 30 && m === 4) return "Reunification Day";
+  if (d === 1 && m === 5) return "Labour Day";
+  if (d === 2 && m === 9) return "National Day";
   
   // 2. Check lunar holidays
   const lunar = getLunarDate(d, m, y);
@@ -2178,7 +2178,7 @@ function getHolidayLabel(date) {
     
     // Giỗ Tổ Hùng Vương: 10/3 âm lịch
     if (ld === 10 && lm === 3 && !lunar.leap) {
-      return "Giỗ Tổ Hùng Vương";
+      return "Hung Kings' Day";
     }
     
     // Tết Nguyên Đán: 30/12 (hoặc 29/12) đến 5/1 âm lịch
@@ -2187,11 +2187,11 @@ function getHolidayLabel(date) {
     nextDay.setDate(nextDay.getDate() + 1);
     const nextLunar = getLunarDate(nextDay.getDate(), nextDay.getMonth() + 1, nextDay.getFullYear());
     if (nextLunar && nextLunar.day === 1 && nextLunar.month === 1 && !nextLunar.leap) {
-      return "Giao Thừa";
+      return "Lunar New Year's Eve";
     }
 
     if (lm === 1 && (ld === 1 || ld === 2 || ld === 3 || ld === 4 || ld === 5) && !lunar.leap) {
-      return "Tết Nguyên Đán";
+      return "Lunar New Year";
     }
   }
 
