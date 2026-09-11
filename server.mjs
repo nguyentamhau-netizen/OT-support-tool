@@ -246,6 +246,7 @@ const GOOGLE_CHAT_USER_IDS = {
   "dung.do@kyanon.digital": "108523326490810960418",
   "duyen.mai@kyanon.digital": "114213995013888416216",
   "han.phan@kyanon.digital": "110173902504130452781",
+  "huy.do@kyanon.digital": "117461128863762362133",
   "huy.donguyenhoang@kyanon.digital": "117461128863762362133",
   "huyen.le@kyanon.digital": "113979302272964730814",
   "ly.tran@kyanon.digital": "118310302891206199302",
@@ -254,6 +255,11 @@ const GOOGLE_CHAT_USER_IDS = {
   "trong.nh@kyanon.digital": "114563953030061483677",
   "tu.tran@kyanon.digital": "105022815299374774801"
 };
+
+// In-memory locks to prevent duplicate reminders across external cron and internal scheduler
+let lastWeekendReminderKey = "";
+let lastWeekendReminderSentAt = 0;
+const lastUpcomingReminderSentTimes = new Map();
 
 function formatUserMention(userOrEmail, displayName = "") {
   if (!userOrEmail) return displayName || "";
@@ -315,14 +321,27 @@ async function sendUpcomingReminders(targetDateStr) {
   let openCount = 0;
   
   localState.chatNotifications = localState.chatNotifications || [];
+  const nowTs = Date.now();
+  const twelveHoursAgo = new Date(nowTs - 12 * 60 * 60 * 1000).toISOString();
 
   for (const slot of slots) {
-    const regs = (localState.registrations || []).filter(r => r.slotId === slot.slotId && r.status === "ACTIVE");
-    
-    // Check if a SENT notification already exists for this slot
-    const alreadySent = localState.chatNotifications.some(n => n.slotId === slot.slotId && n.status === "SENT");
-    if (alreadySent) continue;
+    // 1. In-memory check (12h)
+    const lastSentTs = lastUpcomingReminderSentTimes.get(slot.slotId);
+    if (lastSentTs && (nowTs - lastSentTs) < 12 * 60 * 60 * 1000) {
+      console.log(`[BACKGROUND-JOB] Reminder for slot ${slot.slotId} already sent within 12h. Skipping.`);
+      continue;
+    }
 
+    // 2. CSV state check
+    const alreadySent = localState.chatNotifications.some(n => 
+      n.slotId === slot.slotId && n.status === "SENT" && n.sentAt >= twelveHoursAgo
+    );
+    if (alreadySent) {
+      lastUpcomingReminderSentTimes.set(slot.slotId, nowTs);
+      continue;
+    }
+
+    const regs = (localState.registrations || []).filter(r => r.slotId === slot.slotId && r.status === "ACTIVE");
     const dateDisplay = formatDisplayDate(slot.date);
     let msgText = "";
     const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || await getSettingValue("app_url") || "http://localhost:3000";
@@ -339,12 +358,15 @@ async function sendUpcomingReminders(targetDateStr) {
     }
 
     const success = await sendGoogleChatMessage(msgText);
+    if (success) {
+      lastUpcomingReminderSentTimes.set(slot.slotId, nowTs);
+    }
     
     const notificationId = `notif_${slot.slotId}_${Date.now()}`;
     localState.chatNotifications.push({
       notificationId,
       slotId: slot.slotId,
-      message: msgText,
+      message: msgText.replace(/\r?\n/g, " "),
       scheduledFor: slot.date,
       sentAt: success ? new Date().toISOString() : "",
       status: success ? "SENT" : "FAILED",
@@ -361,12 +383,21 @@ async function sendUpcomingReminders(targetDateStr) {
 }
 
 async function sendWeekendReminders(saturdayStr, sundayStr) {
+  const weekendKey = `${saturdayStr}_${sundayStr}`;
+  const nowTs = Date.now();
+
+  // 1. In-memory deduplication check (12 hours) - stops concurrent/rapid duplicate triggers
+  if (lastWeekendReminderKey === weekendKey && (nowTs - lastWeekendReminderSentAt) < 12 * 60 * 60 * 1000) {
+    console.log("[BACKGROUND-JOB] Weekend reminder already sent within 12 hours (in-memory lock). Skipping duplicate.");
+    return { ok: true, skipped: true, reason: "In-memory lock: already sent in last 12 hours" };
+  }
+
   const localState = await loadLocalState();
   const satSlots = (localState.scheduleSlots || []).filter(s => s.date === saturdayStr);
   const sunSlots = (localState.scheduleSlots || []).filter(s => s.date === sundayStr);
 
-  // Check if a weekend reminder was already sent in the last 12 hours to prevent duplicate triggers
-  const twelveHoursAgo = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+  // 2. Check if a weekend reminder was already sent in the last 12 hours from persistent state
+  const twelveHoursAgo = new Date(nowTs - 12 * 60 * 60 * 1000).toISOString();
   const alreadySent = (localState.chatNotifications || []).some(n => 
     (satSlots.some(s => s.slotId === n.slotId) || sunSlots.some(s => s.slotId === n.slotId)) && 
     n.status === "SENT" && 
@@ -374,7 +405,9 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   );
   if (alreadySent) {
     console.log("[BACKGROUND-JOB] Weekend reminder already sent in the last 12 hours. Skipping duplicate.");
-    return { ok: true, skipped: true };
+    lastWeekendReminderKey = weekendKey;
+    lastWeekendReminderSentAt = nowTs;
+    return { ok: true, skipped: true, reason: "State lock: already sent in last 12 hours" };
   }
 
   const satDisplay = formatDisplayDate(saturdayStr);
@@ -412,6 +445,11 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   msgText += `👉 Các thành viên vui lòng kiểm tra và hoàn thành nhiệm vụ hỗ trợ dự án Amaze.`;
 
   const success = await sendGoogleChatMessage(msgText);
+  if (success) {
+    lastWeekendReminderKey = weekendKey;
+    lastWeekendReminderSentAt = nowTs;
+    lastDailyReminderDay = dateKeyString(getVietnamNow());
+  }
 
   // Log notifications for Saturday and Sunday slots
   localState.chatNotifications = localState.chatNotifications || [];
@@ -420,7 +458,7 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
     localState.chatNotifications.push({
       notificationId,
       slotId,
-      message: msgText,
+      message: msgText.replace(/\r?\n/g, " "),
       scheduledFor: date,
       sentAt: success ? new Date().toISOString() : "",
       status: success ? "SENT" : "FAILED",
@@ -1989,6 +2027,7 @@ async function handleApi(req, res, url) {
         return sendJson(res, 401, { ok: false, error: "Unauthorized." });
       }
       const now = getVietnamNow();
+      lastDailyReminderDay = dateKeyString(now);
       const resData = await checkAndSendReminders(now);
       sendJson(res, 200, { ok: true, ...resData });
       return;
