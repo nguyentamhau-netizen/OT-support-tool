@@ -1960,7 +1960,7 @@ async function handleApi(req, res, url) {
       if (!hasValidToken && (!session || session.role !== "ADMIN")) {
         return sendJson(res, 401, { ok: false, error: "Unauthorized." });
       }
-      const now = new Date();
+      const now = getVietnamNow();
       const resData = await checkAndSendReminders(now);
       sendJson(res, 200, { ok: true, ...resData });
       return;
@@ -2150,25 +2150,37 @@ async function handleApi(req, res, url) {
   }
 }
 
-// Background scheduler interval (checks every 30 minutes)
+// Helper to get Date in Vietnam timezone (GMT+7)
+function getVietnamNow(date = new Date()) {
+  const vnString = date.toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" });
+  return new Date(vnString);
+}
+
+let lastDailyReminderDay = "";
+let lastSaturdayReminderDay = "";
+let lastMonthlySummaryMonth = "";
+
+// Background scheduler interval (checks every 1 minute)
 setInterval(async () => {
   try {
-    const now = new Date();
-    const hour = now.getHours();
-    const dayOfWeek = now.getDay();
+    const vnNow = getVietnamNow();
+    const hour = vnNow.getHours();
+    const dayOfWeek = vnNow.getDay();
+    const todayStr = dateKeyString(vnNow);
 
-    // 17:00 daily reminder check
-    if (hour === 17) {
-      console.log("[BACKGROUND-JOB] Running daily reminder check...");
-      const resData = await checkAndSendReminders(now);
+    // 17:00 daily reminder check (Vietnam time)
+    if (hour === 17 && lastDailyReminderDay !== todayStr) {
+      lastDailyReminderDay = todayStr;
+      console.log(`[BACKGROUND-JOB] Running daily reminder check for ${todayStr} (GMT+7)...`);
+      const resData = await checkAndSendReminders(vnNow);
       console.log("[BACKGROUND-JOB] Check completed:", JSON.stringify(resData));
     }
 
-    // Saturday 9:00 AM re-reminder for OPEN slots
-    if (dayOfWeek === 6 && hour === 9) {
-      console.log("[BACKGROUND-JOB] Saturday morning re-reminder check...");
+    // Saturday 9:00 AM re-reminder for OPEN slots (Vietnam time)
+    if (dayOfWeek === 6 && hour === 9 && lastSaturdayReminderDay !== todayStr) {
+      lastSaturdayReminderDay = todayStr;
+      console.log(`[BACKGROUND-JOB] Saturday morning re-reminder check for ${todayStr}...`);
       const localState = await loadLocalState();
-      const todayStr = dateKeyString(now);
       const todaySlots = (localState.scheduleSlots || []).filter(s => s.date === todayStr);
       for (const slot of todaySlots) {
         const regs = (localState.registrations || []).filter(r => r.slotId === slot.slotId && r.status === "ACTIVE");
@@ -2180,11 +2192,12 @@ setInterval(async () => {
       }
     }
 
-    // Monthly summary: 1st of every month at 10 AM
-    if (now.getDate() === 1 && hour === 10) {
+    // Monthly summary: 1st of every month at 10 AM (Vietnam time)
+    const lastMonth = new Date(vnNow.getFullYear(), vnNow.getMonth() - 1, 1);
+    const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
+    if (vnNow.getDate() === 1 && hour === 10 && lastMonthlySummaryMonth !== lastMonthStr) {
+      lastMonthlySummaryMonth = lastMonthStr;
       console.log("[BACKGROUND-JOB] Sending monthly summary...");
-      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastMonthStr = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, "0")}`;
       const localState = await loadLocalState();
       const slots = (localState.scheduleSlots || []).filter(s => s.month === lastMonthStr);
       const slotIds = new Set(slots.map(s => s.slotId));
@@ -2202,7 +2215,7 @@ setInterval(async () => {
   } catch (err) {
     console.error("[BACKGROUND-JOB] Error:", err.message);
   }
-}, 30 * 60 * 1000); // 30 minutes
+}, 60 * 1000); // Check every 1 minute
 
 createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);

@@ -1,11 +1,12 @@
 name: Google Chat Duty Reminder (Render Wakeup & Trigger)
 
 on:
-  schedule:
-    # 17:00 chiều Thứ Sáu Việt Nam (GMT+7) = 10:00 sáng Thứ Sáu UTC (GMT+0)
-    - cron: '0 10 * * 5'
+  # Tạm tắt cronjob tự động:
+  # schedule:
+  #   # 17:00 chiều Thứ Sáu Việt Nam (GMT+7) = 10:00 sáng Thứ Sáu UTC (GMT+0)
+  #   - cron: '0 10 * * 5'
   
-  # Cho phép kích hoạt thủ công từ giao diện GitHub để test
+  # Cho phép kích hoạt thủ công từ giao diện GitHub để test khi cần
   workflow_dispatch:
 
 jobs:
