@@ -240,6 +240,32 @@ async function getSettingValue(key, defaultValue = "") {
   }
 }
 
+// Mapping of user email to Google Chat User ID for @mention in webhooks
+const GOOGLE_CHAT_USER_IDS = {
+  "hau.nt@kyanon.digital": "102335847793926715474",
+  "dung.do@kyanon.digital": "108523326490810960418",
+  "duyen.mai@kyanon.digital": "114213995013888416216",
+  "han.phan@kyanon.digital": "110173902504130452781",
+  "huy.donguyenhoang@kyanon.digital": "117461128863762362133",
+  "huyen.le@kyanon.digital": "113979302272964730814",
+  "ly.tran@kyanon.digital": "118310302891206199302",
+  "phuong.nt@kyanon.digital": "117678500993428140504",
+  "tham.phan@kyanon.digital": "107926627745726734833",
+  "trong.nh@kyanon.digital": "114563953030061483677",
+  "tu.tran@kyanon.digital": "105022815299374774801"
+};
+
+function formatUserMention(userOrEmail, displayName = "") {
+  if (!userOrEmail) return displayName || "";
+  const email = (typeof userOrEmail === "string" ? userOrEmail : (userOrEmail?.email || "")).toLowerCase().trim();
+  const name = displayName || (typeof userOrEmail === "object" ? userOrEmail?.displayName : "") || email;
+  const chatId = GOOGLE_CHAT_USER_IDS[email];
+  if (chatId) {
+    return `<users/${chatId}>`;
+  }
+  return name ? `*${name}* (${email})` : `*${email}*`;
+}
+
 async function getGoogleChatWebhookUrl() {
   const dbUrl = await getSettingValue("google_chat_webhook_url");
   if (dbUrl) return dbUrl;
@@ -299,15 +325,16 @@ async function sendUpcomingReminders(targetDateStr) {
 
     const dateDisplay = formatDisplayDate(slot.date);
     let msgText = "";
+    const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || await getSettingValue("app_url") || "http://localhost:3000";
     if (regs.length > 0) {
       const assignees = regs.map(r => {
         const u = (localState.users || []).find(user => user.email.toLowerCase() === r.userEmail.toLowerCase());
-        return u ? `*${u.displayName}* (${r.userEmail})` : `*${r.userEmail}*`;
+        return formatUserMention(u || r.userEmail, u?.displayName);
       }).join(", ");
       msgText = `📅 *NHẮC LỊCH TRỰC HÔM NAY/NGÀY MAI (${dateDisplay})*\n📌 Ca trực: *${slot.title}*\n👤 Người trực: ${assignees}\n⏰ Giờ quy định: *8h*\n⚠️ Vui lòng hoàn thành nhiệm vụ hỗ trợ dự án Amaze.`;
       sentCount++;
     } else {
-      msgText = `⚠️ *CẢNH BÁO CA TRỰC CHƯA CÓ NGƯỜI ĐĂNG KÝ (${dateDisplay})*\n📌 Ca trực: *${slot.title}* đang *OPEN*.\n👉 Các PO/QC vui lòng đăng ký ngay để hỗ trợ dự án Amaze.`;
+      msgText = `⚠️ *CẢNH BÁO CA TRỰC CHƯA CÓ NGƯỜI ĐĂNG KÝ (${dateDisplay})* <users/all>\n📌 Ca trực: *${slot.title}* đang *OPEN*.\n👉 Các PO/QC vui lòng đăng ký ngay để hỗ trợ dự án Amaze: <${appUrl}|Đăng ký tại đây>`;
       openCount++;
     }
 
@@ -362,11 +389,11 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   if (satRegs.length > 0) {
     const assignees = [...new Set(satRegs.map(r => {
       const u = (localState.users || []).find(user => user.email.toLowerCase() === r.userEmail.toLowerCase());
-      return u ? `*${u.displayName}* (${r.userEmail})` : `*${r.userEmail}*`;
+      return formatUserMention(u || r.userEmail, u?.displayName);
     }))].join(", ");
     msgText += `*Thứ 7 (${satDisplay}):* ${assignees}\n\n`;
   } else {
-    msgText += `*Thứ 7 (${satDisplay}):* ⚠️ Chưa có người trực -> <${appUrl}|Đăng ký tại đây>\n\n`;
+    msgText += `*Thứ 7 (${satDisplay}):* ⚠️ Chưa có người trực <users/all> -> <${appUrl}|Đăng ký tại đây>\n\n`;
   }
 
   // 2. Process Sunday Slots
@@ -375,11 +402,11 @@ async function sendWeekendReminders(saturdayStr, sundayStr) {
   if (sunRegs.length > 0) {
     const assignees = [...new Set(sunRegs.map(r => {
       const u = (localState.users || []).find(user => user.email.toLowerCase() === r.userEmail.toLowerCase());
-      return u ? `*${u.displayName}* (${r.userEmail})` : `*${r.userEmail}*`;
+      return formatUserMention(u || r.userEmail, u?.displayName);
     }))].join(", ");
     msgText += `*Chủ Nhật (${sunDisplay}):* ${assignees}\n\n`;
   } else {
-    msgText += `*Chủ Nhật (${sunDisplay}):* ⚠️ Chưa có người trực -> <${appUrl}|Đăng ký tại đây>\n\n`;
+    msgText += `*Chủ Nhật (${sunDisplay}):* ⚠️ Chưa có người trực <users/all> -> <${appUrl}|Đăng ký tại đây>\n\n`;
   }
 
   msgText += `👉 Các thành viên vui lòng kiểm tra và hoàn thành nhiệm vụ hỗ trợ dự án Amaze.`;
@@ -1367,7 +1394,7 @@ async function handleApi(req, res, url) {
       const displayName = user.displayName || userEmail;
       const dateDisplay = formatDisplayDate(slot.date);
       broadcastSSE("registration", { action: "register", slotId, userEmail, displayName, date: slot.date });
-      await sendGoogleChatMessage(`✅ *Đăng ký ca trực*\n👤 *${displayName}* (${userEmail})\n📅 Ngày: *${dateDisplay}*\n📌 Ca: *${slot.title}*`);
+      await sendGoogleChatMessage(`✅ *Đăng ký ca trực*\n👤 ${formatUserMention(userEmail, displayName)}\n📅 Ngày: *${dateDisplay}*\n📌 Ca: *${slot.title}*`);
 
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
     }
@@ -1456,7 +1483,7 @@ async function handleApi(req, res, url) {
       const cancelDisplayName = cancelUser?.displayName || registration.userEmail;
       const cancelDateDisplay = slot ? formatDisplayDate(slot.date) : "";
       broadcastSSE("registration", { action: "cancel", slotId: registration.slotId, userEmail: registration.userEmail, displayName: cancelDisplayName, date: slot?.date });
-      await sendGoogleChatMessage(`❌ *Hủy đăng ký ca trực*\n👤 *${cancelDisplayName}* (${registration.userEmail})\n📅 Ngày: *${cancelDateDisplay}*\n👤 Hủy bởi: *${session.email}*`);
+      await sendGoogleChatMessage(`❌ *Hủy đăng ký ca trực*\n👤 ${formatUserMention(registration.userEmail, cancelDisplayName)}\n📅 Ngày: *${cancelDateDisplay}*\n👤 Hủy bởi: ${formatUserMention(session.email)}`);
 
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
     }
@@ -1518,7 +1545,7 @@ async function handleApi(req, res, url) {
 
       // Send Chat Alert
       const dateStr = formatDisplayDate(targetDate);
-      await sendGoogleChatMessage(`📝 *Yêu cầu cập nhật giờ trực mới*\n👤 Thành viên: *${session.email}*\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ thực tế: *${requestedHours}h*\n💬 Lý do: ${reason}`);
+      await sendGoogleChatMessage(`📝 *Yêu cầu cập nhật giờ trực mới*\n👤 Thành viên: ${formatUserMention(session.email, session.displayName)}\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ thực tế: *${requestedHours}h*\n💬 Lý do: ${reason}`);
 
       await saveLocalState(localState);
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
@@ -1597,7 +1624,7 @@ async function handleApi(req, res, url) {
       // Send Chat Alert
       const dateStr = formatDisplayDate(requestObj.targetDate);
       const statusText = status === "APPROVED" ? "✅ Đã phê duyệt" : "❌ Từ chối";
-      await sendGoogleChatMessage(`🔔 *Kết quả duyệt yêu cầu cập nhật giờ*\n👤 Thành viên: *${requestObj.userEmail}*\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ: *${requestObj.requestedHours}h*\n📋 Trạng thái: *${statusText}*\n👤 Người duyệt: *${session.email}*`);
+      await sendGoogleChatMessage(`🔔 *Kết quả duyệt yêu cầu cập nhật giờ*\n👤 Thành viên: ${formatUserMention(requestObj.userEmail)}\n📅 Ngày trực: *${dateStr}*\n⏰ Giờ: *${requestObj.requestedHours}h*\n📋 Trạng thái: *${statusText}*\n👤 Người duyệt: ${formatUserMention(session.email, session.displayName)}`);
 
       await saveLocalState(localState);
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
@@ -1945,7 +1972,8 @@ async function handleApi(req, res, url) {
       if (!session || session.role !== "ADMIN") {
         return sendJson(res, 401, { ok: false, error: "Unauthorized." });
       }
-      const success = await sendGoogleChatMessage("🔔 *Kiểm tra kết nối Google Chat*\nChúc mừng! Webhook cấu hình thành công trên OT Support Tracking Tool.");
+      const mention = formatUserMention(session.email, session.displayName);
+      const success = await sendGoogleChatMessage(`🔔 *Kiểm tra kết nối Google Chat*\nChúc mừng ${mention}! Webhook cấu hình thành công trên OT Support Tracking Tool.`);
       sendJson(res, 200, { ok: success });
       return;
     }
@@ -2043,7 +2071,7 @@ async function handleApi(req, res, url) {
       await saveLocalState(localState);
       const dateDisplay = formatDisplayDate(slot.date);
       broadcastSSE("registration", { action: "swap", slotId, fromEmail, toEmail, date: slot.date });
-      await sendGoogleChatMessage(`🔄 *Đổi ca trực*\n📅 Ngày: *${dateDisplay}*\n👤 Từ: *${fromUser.displayName}* → *${toUser.displayName}*\n👤 Admin: *${session.email}*`);
+      await sendGoogleChatMessage(`🔄 *Đổi ca trực*\n📅 Ngày: *${dateDisplay}*\n👤 Từ: ${formatUserMention(fromUser.email, fromUser.displayName)} → ${formatUserMention(toUser.email, toUser.displayName)}\n👤 Admin: ${formatUserMention(session.email, session.displayName)}`);
       return sendJson(res, 200, { ok: true, state: await loadLocalState() });
     }
 
@@ -2187,7 +2215,7 @@ setInterval(async () => {
         if (regs.length === 0) {
           const appUrl = process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || await getSettingValue("app_url") || "http://localhost:3000";
           const dateDisplay = formatDisplayDate(todayStr);
-          await sendGoogleChatMessage(`⚠️ *NHẮC LẠI: Ca trực HÔM NAY (${dateDisplay}) chưa có người đăng ký!*\n👉 Vui lòng đăng ký ngay: <${appUrl}|Đăng ký tại đây>`);
+          await sendGoogleChatMessage(`⚠️ *NHẮC LẠI: Ca trực HÔM NAY (${dateDisplay}) chưa có người đăng ký!* <users/all>\n👉 Vui lòng đăng ký ngay: <${appUrl}|Đăng ký tại đây>`);
         }
       }
     }
