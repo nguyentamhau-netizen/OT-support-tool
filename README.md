@@ -1,13 +1,14 @@
 # OT Support Tool
 
-Hệ thống quản lý và nhắc lịch trực OT Support cho dự án, tích hợp đồng bộ dữ liệu với Taiga và tự động gửi thông báo qua Google Chat.
+Hệ thống quản lý và nhắc lịch trực OT Support cho dự án Amaze, vận hành độc lập trên cơ sở dữ liệu nội bộ (Excel/CSV) và tự động gửi thông báo qua Google Chat.
 
 ## 🛠 Kiến trúc & Công nghệ
 
 Hệ thống hoạt động dưới dạng một Node.js Server (`server.mjs`) phục vụ cả giao diện Frontend và các API Backend:
-- **Cơ sở dữ liệu (Database)**: Lưu trữ dưới dạng các file CSV cục bộ đặt tại thư mục `db_cache/` (không còn sử dụng Google Sheets API trực tiếp từ app).
-- **Tích hợp Taiga**: Đồng bộ thành viên (memberships), các ca trực (schedule slots) dạng issues, và cập nhật bình luận/trạng thái khi đăng ký/hủy trực.
-- **Google Chat**: Gửi thông báo trực tiếp khi có yêu cầu cập nhật giờ trực, kết quả duyệt yêu cầu và gửi tin nhắn nhắc lịch trực cuối tuần vào mỗi chiều Thứ Sáu.
+- **Cơ sở dữ liệu (Database)**: Lưu trữ dưới dạng các file CSV cục bộ đặt tại thư mục `db_cache/` (mở, xem và quản lý trực tiếp bằng Excel).
+- **Hệ thống xác thực độc lập**: Mã hóa mật khẩu bảo mật bằng thuật toán `scrypt` có sẵn trong Node.js. Hỗ trợ tự đổi mật khẩu cho người dùng và Reset mật khẩu cho Admin.
+- **Google Chat**: Gửi thông báo trực tiếp khi có đăng ký, hủy ca, yêu cầu cập nhật giờ trực, kết quả duyệt yêu cầu và gửi tin nhắn nhắc lịch trực cuối tuần vào mỗi chiều Thứ Sáu.
+- **Xuất bảng tính**: Tích hợp xuất file bảng chấm công theo template Excel (`AMAZE _ Time log - Overtime - 2026.xlsx`) bằng thư viện `exceljs`.
 
 ---
 
@@ -19,19 +20,16 @@ Tạo file `.env` hoặc `.env.local` ở thư mục gốc của dự án với 
 # Port chạy ứng dụng (Mặc định: 4173)
 PORT=4173
 
-# --- CẤU HÌNH TAIGA ---
-TAIGA_API_URL=https://projects.kyanon.digital/api/v1
-TAIGA_PROJECT_SLUG=amaze-ot-log
-TAIGA_USERNAME=tai_khoan_admin_taiga
-TAIGA_PASSWORD=mat_khau_admin_taiga
-# Hoặc thay bằng Token nếu có:
-# TAIGA_ADMIN_TOKEN=your_admin_token
+# Khóa bí mật cho JWT session token
+JWT_SECRET=supersecretjwtkeyforotsupporttool2026
+
+# Mật khẩu khởi tạo mặc định cho thành viên (Mặc định: Amaze@2026)
+DEFAULT_PASSWORD=Amaze@2026
 
 # --- CẤU HÌNH GOOGLE CHAT WEBHOOK ---
 GOOGLE_CHAT_WEBHOOK_URL=https://chat.googleapis.com/v1/spaces/.../messages?key=...&token=...
 
 # --- CẤU HÌNH AN TOÀN CHO CRON JOB ---
-# Token bảo mật để kích hoạt API nhắc lịch từ bên ngoài
 CRON_TOKEN=một_chuỗi_token_ngẫu_nhiên_bảo_mật
 
 # --- CẤU HÌNH MÚI GIỜ (Khi deploy lên Render/Cloud) ---
@@ -61,13 +59,18 @@ TZ=Asia/Ho_Chi_Minh
 
 ---
 
-## 🔐 Đăng nhập Cục bộ (Local Login)
+## 🔐 Đăng nhập & Quản lý Tài khoản (Authentication)
 
-Để đăng nhập kiểm thử hoặc sử dụng tài khoản Admin cục bộ, sử dụng email:
-```text
-hau.nt@kyanon.digital
-```
-*Tài khoản này được định nghĩa mặc định có quyền ADMIN để quản lý các tính năng trong hệ thống.*
+- **Tài khoản Admin mặc định**:
+  - Email: `hau.nt@kyanon.digital`
+  - Mật khẩu mặc định: `Amaze@2026`
+- **Tài khoản thành viên khác**:
+  - Sử dụng email `@kyanon.digital` tương ứng trong danh sách `db_cache/users.csv`.
+  - Mật khẩu ban đầu: `Amaze@2026`
+- **Đổi mật khẩu**:
+  - Người dùng có thể vào tab **My Profile** để đổi mật khẩu cá nhân bất kỳ lúc nào.
+- **Reset mật khẩu (Admin)**:
+  - Admin có thể vào tab **Users** và nhấn nút **🔑 Reset Pass** để đặt lại mật khẩu của thành viên về mật khẩu mặc định.
 
 ---
 
@@ -90,7 +93,7 @@ File này đã được tạo tại thư mục `.github/workflows/google-chat-re
 ## 📂 Danh sách Bảng Dữ liệu (Thư mục `db_cache/`)
 
 Các bảng dữ liệu được lưu dưới dạng file CSV phục vụ cho việc đọc ghi cục bộ bao gồm:
-- `users.csv`: Thông tin danh sách thành viên và phân quyền (ADMIN/MEMBER).
+- `users.csv`: Danh sách thành viên, phân quyền (ADMIN/MEMBER), trạng thái và chuỗi mã hóa mật khẩu (`password_hash`).
 - `schedule_slots.csv`: Danh sách các ngày/ca trực.
 - `slot_capacities.csv`: Cấu hình số lượng người tối đa, số giờ trực yêu cầu cho từng ca.
 - `registrations.csv`: Thông tin đăng ký trực của các thành viên.

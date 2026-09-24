@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { createSign, createHmac } from "node:crypto";
+import { createSign, createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
@@ -8,11 +8,7 @@ loadEnvFile(".env.local");
 
 const port = Number(process.env.PORT || 4173);
 const root = join(process.cwd(), "public");
-let apiUrl = process.env.TAIGA_API_URL || "https://projects.kyanon.digital/api/v1";
-if (apiUrl.endsWith("/")) apiUrl = apiUrl.slice(0, -1);
-if (apiUrl.endsWith("/api")) apiUrl = apiUrl + "/v1";
-const projectSlug = process.env.TAIGA_PROJECT_SLUG || "amaze-ot-log";
-let cachedAdminToken = process.env.TAIGA_ADMIN_TOKEN || null;
+const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "Amaze@2026";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkeyforotsupporttool2026";
 const DB_DIR = join(process.cwd(), "db_cache");
 
@@ -35,7 +31,7 @@ const contentTypes = {
 
 const tableSchemas = {
   settings: ["key", "value", "description", "updated_at"],
-  users: ["user_id", "email", "username", "display_name", "role", "status", "source", "created_at", "updated_at"],
+  users: ["user_id", "email", "username", "display_name", "role", "status", "source", "password_hash", "created_at", "updated_at"],
   schedule_slots: ["slot_id", "date", "month", "day_of_week", "slot_type", "title", "status", "created_by", "created_at", "updated_at", "note", "taiga_issue_id"],
   slot_capacities: ["capacity_id", "slot_id", "role_name", "required_count", "hours_per_person", "man_month_factor", "created_at", "updated_at", "note"],
   registrations: ["registration_id", "slot_id", "capacity_id", "user_email", "registered_by_email", "status", "approved_status", "source", "created_at", "updated_at", "note"],
@@ -58,9 +54,6 @@ const stateKeys = {
   export_jobs: "exportJobs",
   chat_notifications: "chatNotifications"
 };
-
-let customAttrMap = {};
-let projectId = null;
 
 function loadEnvFile(fileName) {
   const filePath = join(process.cwd(), fileName);
@@ -144,6 +137,67 @@ function parseCookies(cookieHeader) {
     if (name) list[name] = value;
   });
   return list;
+}
+
+// Password helpers (using Node.js built-in scrypt)
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const hash = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, storedHash) {
+  if (!storedHash || !storedHash.includes(":")) return false;
+  const [salt, key] = storedHash.split(":");
+  const keyBuffer = Buffer.from(key, "hex");
+  const derivedKey = scryptSync(password, salt, keyBuffer.length);
+  return timingSafeEqual(keyBuffer, derivedKey);
+}
+
+async function ensureDefaultPasswords() {
+  await ensureDbDir();
+  const users = await readCSVTable("users");
+  let updated = false;
+  if (users.length === 0) {
+    const adminEmail = (await getSettingValue("admin_email", "hau.nt@kyanon.digital")).toLowerCase();
+    const username = adminEmail.split("@")[0];
+    users.push({
+      userId: `usr_${username.replace(/\./g, "_")}`,
+      email: adminEmail,
+      username,
+      displayName: "Nguyen Tam Hau",
+      role: "ADMIN",
+      status: "ACTIVE",
+      source: "local",
+      passwordHash: hashPassword(DEFAULT_PASSWORD),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    updated = true;
+  } else {
+    for (const user of users) {
+      if (!user.passwordHash) {
+        user.passwordHash = hashPassword(DEFAULT_PASSWORD);
+        user.updatedAt = new Date().toISOString();
+        updated = true;
+      }
+    }
+  }
+  if (updated) {
+    await writeCSVTable("users", users);
+    console.log("[AUTH] Initialized default passwords for users lacking password hash.");
+  }
+
+  const settings = await readCSVTable("settings");
+  if (settings.length === 0) {
+    const defaultSettings = [
+      { key: "company_domain", value: "kyanon.digital", description: "Company Domain Restriction", updated_at: new Date().toISOString() },
+      { key: "admin_email", value: "hau.nt@kyanon.digital", description: "Admin Email Account", updated_at: new Date().toISOString() },
+      { key: "default_weekend_role", value: "QC/PO", description: "Default Role Name", updated_at: new Date().toISOString() },
+      { key: "default_day_hours", value: "8", description: "Default Hours Per Day", updated_at: new Date().toISOString() }
+    ];
+    await writeCSVTable("settings", defaultSettings);
+  }
 }
 
 // CSV helpers
@@ -676,378 +730,6 @@ async function ensureMonthBackend(month) {
   }
 }
 
-// Taiga API helpers
-async function getAdminToken(forceRefresh = false) {
-  if (cachedAdminToken && !forceRefresh) {
-    return cachedAdminToken;
-  }
-
-  const username = process.env.TAIGA_USERNAME;
-  const password = process.env.TAIGA_PASSWORD;
-
-  if (!username || !password) {
-    return process.env.TAIGA_ADMIN_TOKEN || "";
-  }
-
-  try {
-    console.log("[TAIGA-AUTH] Requesting new token using credentials...");
-    const authRes = await fetch(`${apiUrl}/auth`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "normal", username, password })
-    });
-
-    if (!authRes.ok) {
-      throw new Error(`Authentication failed: ${authRes.status} ${await authRes.text()}`);
-    }
-
-    const userData = await authRes.json();
-    if (userData.auth_token) {
-      cachedAdminToken = userData.auth_token;
-      console.log("[TAIGA-AUTH] New token acquired successfully.");
-      return cachedAdminToken;
-    } else {
-      throw new Error("No auth_token returned from Taiga auth endpoint.");
-    }
-  } catch (err) {
-    console.error("[TAIGA-AUTH] Failed to login to Taiga:", err.message);
-    return process.env.TAIGA_ADMIN_TOKEN || "";
-  }
-}
-
-async function taigaFetch(path, options = {}, isRetry = false) {
-  const token = await getAdminToken();
-  const response = await fetch(`${apiUrl}${path}`, {
-    ...options,
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    }
-  });
-
-  if (response.status === 401 && !isRetry) {
-    console.log("[TAIGA-AUTH] Received 401 from Taiga. Retrying with refreshed token...");
-    await getAdminToken(true);
-    return taigaFetch(path, options, true);
-  }
-
-  if (!response.ok) {
-    throw new Error(`Taiga API failed: ${response.status} ${await response.text()}`);
-  }
-  if (response.status === 204) return null;
-  return response.json();
-}
-
-async function addTaigaComment(issueId, commentText) {
-  const issue = await taigaFetch(`/issues/${issueId}`);
-  await taigaFetch(`/issues/${issueId}`, {
-    method: "PATCH",
-    body: JSON.stringify({
-      version: issue.version,
-      comment: commentText
-    })
-  });
-}
-
-async function initTaigaConfig() {
-  const token = await getAdminToken();
-  if (!token) return;
-  try {
-    const project = await taigaFetch(`/projects/by_slug?slug=${projectSlug}`);
-    projectId = project.id;
-
-    try {
-      const attrs = await taigaFetch(`/issue-custom-attributes?project=${projectId}`);
-      attrs.forEach(attr => {
-        customAttrMap[attr.name.toLowerCase()] = attr.id;
-      });
-    } catch (err) {
-      console.warn("Could not load custom attributes:", err.message);
-    }
-  } catch (err) {
-    console.error("Taiga connection error during startup:", err.message);
-  }
-}
-
-async function syncUsersFromTaiga() {
-  const memberships = await taigaFetch(`/memberships?project=${projectId}`);
-  
-  // Read existing local users to merge those added via admin app
-  const localUsers = await readCSVTable("users");
-  const localAdminAppUsers = localUsers.filter(u => u.source === "admin_app");
-
-  const taigaUsers = memberships
-    .filter(m => m.user_email || m.email)
-    .map(m => {
-      const email = (m.user_email || m.email).toLowerCase();
-      const isUserAdmin = m.is_admin || m.role_name === "Owner" || m.role_name === "Admin" || email === "hau.nt@kyanon.digital";
-      const username = email.split("@")[0];
-      return {
-        userId: `usr_${username.replace(/\./g, "_")}`,
-        email: email,
-        username: username,
-        displayName: m.full_name || username,
-        role: isUserAdmin ? "ADMIN" : "MEMBER",
-        status: "ACTIVE",
-        source: "taiga",
-        createdAt: m.created_at || new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-    });
-
-  // Merge: keep all taiga users, and add local admin app users that are not already present in taiga users list
-  const mergedUsers = [...taigaUsers];
-  localAdminAppUsers.forEach(lu => {
-    if (!mergedUsers.some(tu => tu.email.toLowerCase() === lu.email.toLowerCase())) {
-      mergedUsers.push(lu);
-    }
-  });
-
-  await writeCSVTable("users", mergedUsers);
-  return mergedUsers;
-}
-
-async function syncFromTaiga() {
-  await ensureDbDir();
-  if (!projectId) {
-    await initTaigaConfig();
-  }
-
-  const users = await syncUsersFromTaiga();
-  const taigaUserIdToEmail = {};
-  const memberships = await taigaFetch(`/memberships?project=${projectId}`);
-  memberships.forEach(m => {
-    const email = m.user_email || m.email;
-    if (m.user && email) {
-      taigaUserIdToEmail[m.user] = email.toLowerCase();
-    }
-  });
-
-  let issues = [];
-  let page = 1;
-  while (true) {
-    const pageIssues = await taigaFetch(`/issues?project=${projectId}&page_size=100&page=${page}`);
-    if (!pageIssues || pageIssues.length === 0) break;
-    issues = issues.concat(pageIssues);
-    if (pageIssues.length < 100) break;
-    page++;
-  }
-
-  const scheduleSlots = [];
-  const capacities = [];
-  const registrations = [];
-  const holidaySettings = [];
-  const updateRequests = [];
-  const auditLogs = [];
-
-  for (const issue of issues) {
-    const slotMatch = issue.subject.match(/^\[OT-SLOT\]\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.*)/i);
-    if (!slotMatch) continue;
-
-    const date = slotMatch[1];
-    const title = slotMatch[2];
-    const slotId = `slot_${date.replace(/-/g, "_")}`;
-    const [year, monthIndex] = date.split("-").map(Number);
-    const month = `${year}-${String(monthIndex).padStart(2, "0")}`;
-    const slotDate = new Date(year, monthIndex - 1, Number(date.split("-")[2]));
-    const dayOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][slotDate.getDay()];
-
-    let slotType = "WEEKEND";
-    let hours = 8;
-    let manMonthFactor = 1;
-
-    try {
-      const attrVals = await taigaFetch(`/issues/custom-attributes-values/${issue.id}`);
-      const vals = attrVals.attributes_values || {};
-      const slotTypeAttrId = customAttrMap["slot_type"];
-      const hoursAttrId = customAttrMap["hours"];
-      const factorAttrId = customAttrMap["man_month_factor"];
-
-      if (vals[slotTypeAttrId]) slotType = vals[slotTypeAttrId];
-      if (vals[hoursAttrId]) hours = Number(vals[hoursAttrId]) || 8;
-      if (vals[factorAttrId]) manMonthFactor = Number(vals[factorAttrId]) || 1;
-    } catch {
-      // Attributes might not be loaded or set yet
-    }
-
-    const existingSlotIndex = scheduleSlots.findIndex(s => s.date === date);
-    if (existingSlotIndex === -1) {
-      scheduleSlots.push({
-        slotId,
-        date,
-        month,
-        dayOfWeek,
-        slotType,
-        title,
-        status: issue.assigned_to ? "FULL" : "OPEN",
-        createdBy: "taiga",
-        createdAt: issue.created_date,
-        updatedAt: issue.modified_date,
-        note: issue.description || "",
-        taigaIssueId: issue.id
-      });
-
-      const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
-      capacities.push({
-        capacityId,
-        slotId,
-        roleName: "QC/PO",
-        requiredCount: 1,
-        hoursPerPerson: hours,
-        manMonthFactor,
-        createdAt: issue.created_date,
-        updatedAt: issue.modified_date,
-        note: ""
-      });
-
-      if (slotType === "HOLIDAY" || slotType === "TET") {
-        holidaySettings.push({
-          holidayId: `hol_${date.replace(/-/g, "_")}`,
-          date,
-          name: title,
-          holidayType: slotType,
-          requiredRole: "QC/PO",
-          requiredCount: 1,
-          hoursPerPerson: hours,
-          manMonthFactor,
-          note: issue.description || "",
-          createdBy: "taiga",
-          createdAt: issue.created_date,
-          updatedAt: issue.modified_date
-        });
-      }
-    } else {
-      if (issue.assigned_to) {
-        scheduleSlots[existingSlotIndex].status = "FULL";
-      }
-    }
-
-    if (issue.assigned_to) {
-      const userEmail = taigaUserIdToEmail[issue.assigned_to] || "";
-      if (userEmail) {
-        const username = userEmail.split("@")[0];
-        const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
-        
-        const registrationExists = registrations.some(r => 
-          r.slotId === slotId && 
-          r.userEmail.toLowerCase() === userEmail.toLowerCase() && 
-          r.status === "ACTIVE"
-        );
-
-        if (!registrationExists) {
-          registrations.push({
-            registrationId: `reg_${issue.id}_${username.replace(/\./g, "_")}`,
-            slotId,
-            capacityId,
-            userEmail,
-            registeredByEmail: userEmail,
-            status: "ACTIVE",
-            approvedStatus: "AUTO_APPROVED",
-            source: "self_registration",
-            createdAt: issue.created_date,
-            updatedAt: issue.modified_date,
-            note: ""
-          });
-        }
-      }
-    }
-
-    try {
-      const history = await taigaFetch(`/history/issue/${issue.id}`);
-      for (const entry of history) {
-        if (!entry.comment) continue;
-        const commentText = entry.comment;
-
-        if (commentText.includes("[UPDATE-REQUEST]")) {
-          let requestedHours = 8;
-          let reason = "";
-          let evidenceUrl = "";
-
-          const lines = commentText.split("\n");
-          lines.forEach(line => {
-            if (line.toLowerCase().startsWith("hours:")) {
-              requestedHours = Number(line.split(":")[1].trim()) || 8;
-            } else if (line.toLowerCase().startsWith("reason:")) {
-              reason = line.split(":")[1].trim();
-            } else if (line.toLowerCase().startsWith("evidence:")) {
-              evidenceUrl = line.split(":")[1].trim();
-            }
-          });
-
-          let status = "PENDING";
-          let reviewedBy = "";
-          let reviewedAt = "";
-
-          for (const subEntry of history) {
-            if (!subEntry.comment) continue;
-            if (new Date(subEntry.created_date) <= new Date(entry.created_date)) continue;
-
-            if (subEntry.comment.includes("[UPDATE-APPROVED]")) {
-              status = "APPROVED";
-              reviewedBy = subEntry.user.username;
-              reviewedAt = subEntry.created_date;
-            } else if (subEntry.comment.includes("[UPDATE-REJECTED]")) {
-              status = "REJECTED";
-              reviewedBy = subEntry.user.username;
-              reviewedAt = subEntry.created_date;
-            }
-          }
-
-          const requesterEmail = taigaUserIdToEmail[entry.user.id] || "";
-          updateRequests.push({
-            requestId: `req_${entry.id}`,
-            userEmail: requesterEmail,
-            targetRegistrationId: `reg_${issue.id}_${requesterEmail.split("@")[0].replace(/\./g, "_")}`,
-            targetDate: date,
-            requestedHours,
-            reason,
-            evidenceUrl,
-            status,
-            adminNote: "",
-            reviewedBy,
-            createdAt: entry.created_date,
-            reviewedAt
-          });
-        }
-
-        auditLogs.push({
-          logId: `log_${entry.id}`,
-          actorEmail: taigaUserIdToEmail[entry.user.id] || "system",
-          action: commentText.includes("[UPDATE-APPROVED]") ? "UPDATE_REQUEST_APPROVED" :
-                  commentText.includes("[UPDATE-REJECTED]") ? "UPDATE_REQUEST_REJECTED" :
-                  commentText.includes("[UPDATE-REQUEST]") ? "UPDATE_REQUEST_CREATE" : "COMMENT_ADD",
-          entityType: "issue",
-          entityId: String(issue.id),
-          beforeJson: "",
-          afterJson: JSON.stringify({ comment: commentText }),
-          createdAt: entry.created_date
-        });
-      }
-    } catch {
-      // History fetching might fail for new items
-    }
-  }
-
-  await writeCSVTable("schedule_slots", scheduleSlots);
-  await writeCSVTable("slot_capacities", capacities);
-  await writeCSVTable("registrations", registrations);
-  await writeCSVTable("holiday_settings", holidaySettings);
-  await writeCSVTable("update_requests", updateRequests);
-  await writeCSVTable("audit_logs", auditLogs);
-
-  const settings = await readCSVTable("settings");
-  if (settings.length === 0) {
-    const defaultSettings = [
-      { key: "company_domain", value: "kyanon.digital", description: "Company Domain Restriction", updated_at: new Date().toISOString() },
-      { key: "admin_email", value: "hau.nt@kyanon.digital", description: "Admin Email Account", updated_at: new Date().toISOString() },
-      { key: "default_weekend_role", value: "QC/PO", description: "Default Role Name", updated_at: new Date().toISOString() },
-      { key: "default_day_hours", value: "8", description: "Default Hours Per Day", updated_at: new Date().toISOString() }
-    ];
-    await writeCSVTable("settings", defaultSettings);
-  }
-}
-
 async function loadLocalState() {
   const state = {};
   for (const tableName of Object.keys(tableSchemas)) {
@@ -1066,117 +748,145 @@ async function saveLocalState(state) {
 
 async function handleExcelExport(req, res, url) {
   const month = url.searchParams.get("month");
-  const toMonth = url.searchParams.get("toMonth");
   if (!month || !/^\d{4}-\d{2}$/.test(month)) {
     return sendJson(res, 400, { ok: false, error: "Missing or invalid month parameter. Format: YYYY-MM" });
-  }
-
-  // Build list of months to export
-  const monthsToExport = [month];
-  if (toMonth && /^\d{4}-\d{2}$/.test(toMonth) && toMonth > month) {
-    const [sy, sm] = month.split("-").map(Number);
-    const [ey, em] = toMonth.split("-").map(Number);
-    let cy = sy, cm = sm + 1;
-    while (cy < ey || (cy === ey && cm <= em)) {
-      monthsToExport.push(`${cy}-${String(cm).padStart(2, "0")}`);
-      cm++;
-      if (cm > 12) { cm = 1; cy++; }
-    }
   }
 
   try {
     const { default: ExcelJS } = await import("exceljs");
     const workbook = new ExcelJS.Workbook();
-    const templatePath = join(process.cwd(), "templates", "AMAZE _ Time log - Overtime - 2026.xlsx");
-    await workbook.xlsx.readFile(templatePath);
+    workbook.creator = "OT Support Tool";
+    workbook.created = new Date();
 
     const localState = await loadLocalState();
 
-    // Get active users
-    const activeUsers = localState.users
+    // Get active users sorted by display name
+    const activeUsers = (localState.users || [])
       .filter(u => u.status === "ACTIVE")
-      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+      .sort((a, b) => (a.displayName || a.username).localeCompare(b.displayName || b.username));
 
     const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const [year, monthVal] = month.split("-");
+    const shortMonth = monthNames[parseInt(monthVal, 10) - 1] || "Month";
+    const sheetName = `${shortMonth}${year}`;
 
-    for (const exportMonth of monthsToExport) {
-      const [year, monthVal] = exportMonth.split("-");
-      const shortMonth = monthNames[parseInt(monthVal, 10) - 1] || "Month";
-      const sheetName = `${shortMonth}${year}`;
+    // Get slots of only this selected month
+    const slots = (localState.scheduleSlots || [])
+      .filter(s => s.month === month)
+      .sort((a, b) => a.date.localeCompare(b.date));
 
-      // Get slots of this month
-      const slots = localState.scheduleSlots
-        .filter(s => s.month === exportMonth)
-        .sort((a, b) => a.date.localeCompare(b.date));
+    // Create ONLY the single worksheet for this displayed month
+    const worksheet = workbook.addWorksheet(sheetName);
+    worksheet.views = [{ showGridLines: true }];
 
-      let worksheet = workbook.getWorksheet(sheetName);
-      if (worksheet) workbook.removeWorksheet(sheetName);
-      worksheet = workbook.addWorksheet(sheetName);
-      worksheet.views = [{ showGridLines: true }];
+    const borderStyle = {
+      top: { style: "thin", color: { argb: "FFD3D3D3" } },
+      left: { style: "thin", color: { argb: "FFD3D3D3" } },
+      bottom: { style: "thin", color: { argb: "FFD3D3D3" } },
+      right: { style: "thin", color: { argb: "FFD3D3D3" } }
+    };
 
-      // Row 1: Totals
-      worksheet.getRow(1).getCell(1).value = "Total (man-days)";
-      worksheet.getRow(1).getCell(1).font = { name: "Arial", size: 10, bold: true };
+    // Row 1: Totals
+    const cellTotalLabel = worksheet.getRow(1).getCell(1);
+    cellTotalLabel.value = "Total (man-days)";
+    cellTotalLabel.font = { name: "Arial", size: 10, bold: true };
+    cellTotalLabel.alignment = { horizontal: "left", vertical: "middle" };
+    cellTotalLabel.border = borderStyle;
 
-      // Row 2: Headers
-      worksheet.getRow(2).getCell(1).value = "Date";
-      worksheet.getRow(2).getCell(1).font = { name: "Arial", size: 10, bold: true };
-      worksheet.getRow(2).getCell(1).alignment = { horizontal: "center", vertical: "middle" };
+    // Row 2: Headers
+    const cellDateHeader = worksheet.getRow(2).getCell(1);
+    cellDateHeader.value = "Date";
+    cellDateHeader.font = { name: "Arial", size: 10, bold: true };
+    cellDateHeader.alignment = { horizontal: "center", vertical: "middle" };
+    cellDateHeader.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FFD0E0E3" },
+      bgColor: { argb: "FFD0E0E3" }
+    };
+    cellDateHeader.border = borderStyle;
 
-      activeUsers.forEach((user, idx) => {
-        const colNum = idx + 2;
-        const cellHeader = worksheet.getRow(2).getCell(colNum);
-        cellHeader.value = user.username;
-        cellHeader.font = { name: "Arial", size: 10, bold: true };
-        cellHeader.fill = {
-          type: "pattern", pattern: "solid",
-          fgColor: { argb: "FFD0E0E3" }, bgColor: { argb: "FFD0E0E3" }
-        };
-        cellHeader.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    activeUsers.forEach((user, idx) => {
+      const colNum = idx + 2;
+      const cellHeader = worksheet.getRow(2).getCell(colNum);
+      cellHeader.value = user.username || user.displayName;
+      cellHeader.font = { name: "Arial", size: 10, bold: true };
+      cellHeader.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: "FFD0E0E3" },
+        bgColor: { argb: "FFD0E0E3" }
+      };
+      cellHeader.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+      cellHeader.border = borderStyle;
 
-        const cellTotal = worksheet.getRow(1).getCell(colNum);
-        const colLetter = worksheet.getColumn(colNum).letter;
-        cellTotal.value = { formula: `SUM(${colLetter}3:${colLetter}${slots.length + 2})`, result: 0 };
-        cellTotal.font = { name: "Arial", size: 10, bold: true };
-        cellTotal.numFmt = "#,##0.0";
-      });
+      const cellTotal = worksheet.getRow(1).getCell(colNum);
+      const colLetter = worksheet.getColumn(colNum).letter;
+      const endRow = slots.length > 0 ? slots.length + 2 : 3;
+      cellTotal.value = { formula: `SUM(${colLetter}3:${colLetter}${endRow})`, result: 0 };
+      cellTotal.font = { name: "Arial", size: 10, bold: true };
+      cellTotal.alignment = { horizontal: "center", vertical: "middle" };
+      cellTotal.numFmt = "#,##0.0";
+      cellTotal.border = borderStyle;
+    });
 
-      slots.forEach((slot, sIdx) => {
-        const rowNum = sIdx + 3;
-        const row = worksheet.getRow(rowNum);
-        const cellDate = row.getCell(1);
-        const parts = slot.date.split("-").map(Number);
-        cellDate.value = new Date(parts[0], parts[1] - 1, parts[2]);
-        cellDate.font = { name: "Arial", size: 10 };
-        cellDate.alignment = { horizontal: "right", vertical: "middle" };
-        cellDate.numFmt = "ddd, mmm dd, yyyy";
+    slots.forEach((slot, sIdx) => {
+      const rowNum = sIdx + 3;
+      const row = worksheet.getRow(rowNum);
+      const cellDate = row.getCell(1);
+      const parts = slot.date.split("-").map(Number);
+      cellDate.value = new Date(parts[0], parts[1] - 1, parts[2]);
+      cellDate.font = { name: "Arial", size: 10 };
+      cellDate.alignment = { horizontal: "right", vertical: "middle" };
+      cellDate.numFmt = "ddd, mmm dd, yyyy";
+      cellDate.border = borderStyle;
 
-        activeUsers.forEach((user, uIdx) => {
-          const colNum = uIdx + 2;
-          const cellVal = row.getCell(colNum);
-          const reg = localState.registrations.find(r =>
-            r.slotId === slot.slotId &&
-            r.userEmail.toLowerCase() === user.email.toLowerCase() &&
-            r.status === "ACTIVE"
+      activeUsers.forEach((user, uIdx) => {
+        const colNum = uIdx + 2;
+        const cellVal = row.getCell(colNum);
+        cellVal.border = borderStyle;
+
+        const reg = (localState.registrations || []).find(r =>
+          r.slotId === slot.slotId &&
+          r.userEmail.toLowerCase() === user.email.toLowerCase() &&
+          r.status === "ACTIVE"
+        );
+
+        if (reg) {
+          // Check if there is an approved update request with adjusted hours
+          const approvedReq = (localState.updateRequests || []).find(req =>
+            req.userEmail.toLowerCase() === user.email.toLowerCase() &&
+            req.targetDate === slot.date &&
+            req.status === "APPROVED"
           );
-          if (reg) {
-            cellVal.value = 0.5;
-            cellVal.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFF0000" } };
-            cellVal.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" }, bgColor: { argb: "FFFFFF00" } };
-            cellVal.alignment = { horizontal: "center", vertical: "middle" };
-            cellVal.numFmt = "#,##0.0";
+
+          let manDays = 0.5;
+          if (approvedReq && approvedReq.requestedHours) {
+            manDays = Number(approvedReq.requestedHours) / 16;
+          } else {
+            const cap = (localState.capacities || []).find(c => c.slotId === slot.slotId);
+            if (slot.slotType === "HOLIDAY" || slot.slotType === "TET") {
+              manDays = Number(cap?.manMonthFactor || 1);
+            } else {
+              manDays = cap?.hoursPerPerson ? (Number(cap.hoursPerPerson) / 16) : 0.5;
+            }
           }
-        });
+
+          cellVal.value = manDays;
+          cellVal.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFF0000" } };
+          cellVal.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFFF00" }, bgColor: { argb: "FFFFFF00" } };
+          cellVal.alignment = { horizontal: "center", vertical: "middle" };
+          cellVal.numFmt = "#,##0.0";
+        }
       });
+    });
 
-      worksheet.getColumn(1).width = 20;
-      activeUsers.forEach((_, idx) => { worksheet.getColumn(idx + 2).width = 14; });
-    }
+    worksheet.getColumn(1).width = 20;
+    activeUsers.forEach((_, idx) => { worksheet.getColumn(idx + 2).width = 14; });
 
-    const fileLabel = toMonth ? `${month}_to_${toMonth}` : month;
     res.writeHead(200, {
       "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="AMAZE_OT_Report_${fileLabel}.xlsx"`,
+      "Content-Disposition": `attachment; filename="AMAZE_OT_Report_${month}.xlsx"`,
       "Cache-Control": "no-store"
     });
 
@@ -1191,33 +901,46 @@ async function handleApi(req, res, url) {
   try {
     if (req.method === "POST" && url.pathname === "/api/auth/login") {
       const { username, password } = await readJson(req);
-      const authRes = await fetch(`${apiUrl}/auth`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type: "normal", username, password })
+      if (!username || !password) {
+        return sendJson(res, 400, { ok: false, error: "Username/Email and password are required." });
+      }
+
+      const domain = await getSettingValue("company_domain", "kyanon.digital");
+      const input = username.trim().toLowerCase();
+      const localUsers = await readCSVTable("users");
+
+      const user = localUsers.find(u => {
+        const uEmail = (u.email || "").toLowerCase();
+        const uName = (u.username || "").toLowerCase();
+        return uEmail === input || uName === input || uEmail === `${input}@${domain}`;
       });
 
-      if (!authRes.ok) {
+      if (!user || user.status !== "ACTIVE") {
+        return sendJson(res, 401, { ok: false, error: "Invalid username or password, or account is deactivated." });
+      }
+
+      let isValid = false;
+      if (user.passwordHash) {
+        isValid = verifyPassword(password, user.passwordHash);
+      } else {
+        // Fallback for user without password hash yet
+        if (password === DEFAULT_PASSWORD) {
+          user.passwordHash = hashPassword(DEFAULT_PASSWORD);
+          await writeCSVTable("users", localUsers);
+          isValid = true;
+        }
+      }
+
+      if (!isValid) {
         return sendJson(res, 401, { ok: false, error: "Invalid username or password." });
       }
 
-      const userData = await authRes.json();
-      const email = userData.email.toLowerCase();
-
-      const domain = await getSettingValue("company_domain", "kyanon.digital");
-      if (!email.endsWith(`@${domain}`)) {
-        return sendJson(res, 403, { ok: false, error: `Only @${domain} accounts are permitted.` });
-      }
-
-      // Determine admin from DB setting instead of hardcode
       const adminEmail = (await getSettingValue("admin_email", "hau.nt@kyanon.digital")).toLowerCase();
-      const localUsers = await readCSVTable("users");
-      const dbUser = localUsers.find(u => u.email.toLowerCase() === email);
-      const isUserAdmin = email === adminEmail || (dbUser && dbUser.role === "ADMIN");
+      const isUserAdmin = user.email.toLowerCase() === adminEmail || user.role === "ADMIN";
       const token = signToken({
-        email,
-        username: userData.username,
-        displayName: userData.full_name,
+        email: user.email.toLowerCase(),
+        username: user.username,
+        displayName: user.displayName,
         role: isUserAdmin ? "ADMIN" : "MEMBER"
       });
 
@@ -1225,7 +948,14 @@ async function handleApi(req, res, url) {
         "Set-Cookie": `session_token=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000`,
         "Content-Type": "application/json"
       });
-      return res.end(JSON.stringify({ ok: true, user: { email, displayName: userData.full_name, role: isUserAdmin ? "ADMIN" : "MEMBER" } }));
+      return res.end(JSON.stringify({
+        ok: true,
+        user: {
+          email: user.email.toLowerCase(),
+          displayName: user.displayName,
+          role: isUserAdmin ? "ADMIN" : "MEMBER"
+        }
+      }));
     }
 
     if (req.method === "POST" && url.pathname === "/api/auth/logout") {
@@ -1236,16 +966,102 @@ async function handleApi(req, res, url) {
       return res.end(JSON.stringify({ ok: true }));
     }
 
+    if (req.method === "POST" && url.pathname === "/api/auth/change-password") {
+      const cookies = parseCookies(req.headers.cookie);
+      const session = cookies.session_token ? verifyToken(cookies.session_token) : null;
+      if (!session || !session.email) {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Please log in." });
+      }
+
+      const { currentPassword, newPassword } = await readJson(req);
+      if (!currentPassword || !newPassword) {
+        return sendJson(res, 400, { ok: false, error: "Current password and new password are required." });
+      }
+
+      if (newPassword.length < 6) {
+        return sendJson(res, 400, { ok: false, error: "New password must be at least 6 characters long." });
+      }
+
+      const localUsers = await readCSVTable("users");
+      const user = localUsers.find(u => u.email.toLowerCase() === session.email.toLowerCase());
+      if (!user) {
+        return sendJson(res, 404, { ok: false, error: "User not found." });
+      }
+
+      const isValid = user.passwordHash ? verifyPassword(currentPassword, user.passwordHash) : (currentPassword === DEFAULT_PASSWORD);
+      if (!isValid) {
+        return sendJson(res, 400, { ok: false, error: "Current password is incorrect." });
+      }
+
+      user.passwordHash = hashPassword(newPassword);
+      user.updatedAt = new Date().toISOString();
+      await writeCSVTable("users", localUsers);
+
+      const localState = await loadLocalState();
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "USER_CHANGE_PASSWORD",
+        entityType: "user",
+        entityId: session.email,
+        beforeJson: "",
+        afterJson: JSON.stringify({ email: session.email, changedAt: new Date().toISOString() }),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+      await writeCSVTable("audit_logs", localState.auditLogs);
+
+      return sendJson(res, 200, { ok: true, message: "Password updated successfully." });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/admin/users/reset-password") {
+      const cookies = parseCookies(req.headers.cookie);
+      const session = cookies.session_token ? verifyToken(cookies.session_token) : null;
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+
+      const { email, newPassword } = await readJson(req);
+      if (!email) {
+        return sendJson(res, 400, { ok: false, error: "User email is required." });
+      }
+
+      const targetEmail = email.trim().toLowerCase();
+      const resetPass = newPassword?.trim() || DEFAULT_PASSWORD;
+      const localUsers = await readCSVTable("users");
+      const user = localUsers.find(u => u.email.toLowerCase() === targetEmail);
+
+      if (!user) {
+        return sendJson(res, 404, { ok: false, error: "User not found." });
+      }
+
+      user.passwordHash = hashPassword(resetPass);
+      user.updatedAt = new Date().toISOString();
+      await writeCSVTable("users", localUsers);
+
+      const localState = await loadLocalState();
+      const auditLog = {
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: session.email,
+        action: "USER_RESET_PASSWORD",
+        entityType: "user",
+        entityId: targetEmail,
+        beforeJson: "",
+        afterJson: JSON.stringify({ targetEmail, resetBy: session.email, resetAt: new Date().toISOString() }),
+        createdAt: new Date().toISOString()
+      };
+      localState.auditLogs.push(auditLog);
+      await writeCSVTable("audit_logs", localState.auditLogs);
+
+      return sendJson(res, 200, { ok: true, message: `Password for ${user.email} reset to ${resetPass}.` });
+    }
+
     // Verify session for state APIs
     const cookies = parseCookies(req.headers.cookie);
     const session = cookies.session_token ? verifyToken(cookies.session_token) : null;
 
     if (req.method === "GET" && url.pathname === "/api/state") {
-      const forceSync = url.searchParams.get("sync") === "true";
       const month = url.searchParams.get("month") || dateKeyString(new Date()).slice(0, 7);
-      if (forceSync || !existsSync(join(DB_DIR, "schedule_slots.csv"))) {
-        await syncFromTaiga();
-      }
       await ensureMonthBackend(month);
       const fullState = await loadLocalState();
 
@@ -1253,6 +1069,7 @@ async function handleApi(req, res, url) {
       const monthSlotIds = new Set((fullState.scheduleSlots || []).filter(s => s.month === month).map(s => s.slotId));
       const filteredState = {
         ...fullState,
+        users: (fullState.users || []).map(({ passwordHash, ...u }) => u),
         registrations: (fullState.registrations || []).filter(r => monthSlotIds.has(r.slotId)),
         auditLogs: (fullState.auditLogs || []).slice(-200),
         chatNotifications: (fullState.chatNotifications || []).filter(n => monthSlotIds.has(n.slotId))
@@ -1337,102 +1154,6 @@ async function handleApi(req, res, url) {
       };
       localState.auditLogs.push(auditLog);
 
-      // 4. Update Taiga
-      let memberships = await taigaFetch(`/memberships?project=${projectId}`);
-      const emailToTaigaUserId = {};
-      memberships.forEach(m => {
-        const email = m.user_email || m.email;
-        if (m.user && email) {
-          emailToTaigaUserId[email.toLowerCase()] = m.user;
-        }
-      });
-
-      let taigaIssueId = slot.taigaIssueId;
-      if (!taigaIssueId) {
-        // Create the issue on Taiga (e.g. for auto-generated weekend slots)
-        const createdIssue = await taigaFetch("/issues", {
-          method: "POST",
-          body: JSON.stringify({
-            project: projectId,
-            subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
-            description: slot.note || "Auto-generated weekend slot",
-            assigned_to: emailToTaigaUserId[userEmail.toLowerCase()] || null
-          })
-        });
-        taigaIssueId = createdIssue.id;
-        slot.taigaIssueId = taigaIssueId;
-
-        const slotTypeAttrId = customAttrMap["slot_type"];
-        const hoursAttrId = customAttrMap["hours"];
-        const factorAttrId = customAttrMap["man_month_factor"];
-
-        await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
-          method: "PATCH",
-          body: JSON.stringify({
-            version: createdIssue.version || 1,
-            attributes_values: {
-              [slotTypeAttrId]: slot.slotType,
-              [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
-              [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
-            }
-          })
-        });
-      } else {
-        // Update assignee for existing issue
-        let existingIssue = null;
-        try {
-          existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
-        } catch (err) {
-          if (err.message.includes("404")) {
-            taigaIssueId = null;
-          } else {
-            throw err;
-          }
-        }
-
-        if (!taigaIssueId) {
-          const createdIssue = await taigaFetch("/issues", {
-            method: "POST",
-            body: JSON.stringify({
-              project: projectId,
-              subject: `[OT-SLOT] ${slot.date} | ${slot.title}`,
-              description: slot.note || "Auto-generated weekend slot",
-              assigned_to: emailToTaigaUserId[userEmail.toLowerCase()] || null
-            })
-          });
-          taigaIssueId = createdIssue.id;
-          slot.taigaIssueId = taigaIssueId;
-
-          const slotTypeAttrId = customAttrMap["slot_type"];
-          const hoursAttrId = customAttrMap["hours"];
-          const factorAttrId = customAttrMap["man_month_factor"];
-
-          await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              version: createdIssue.version || 1,
-              attributes_values: {
-                [slotTypeAttrId]: slot.slotType,
-                [hoursAttrId]: String(capacity ? capacity.hoursPerPerson : 8),
-                [factorAttrId]: String(capacity ? capacity.manMonthFactor : 1)
-              }
-            })
-          });
-        } else {
-          await taigaFetch(`/issues/${taigaIssueId}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              version: existingIssue.version,
-              assigned_to: emailToTaigaUserId[userEmail.toLowerCase()] || null
-            })
-          });
-        }
-      }
-
-      if (taigaIssueId) {
-        await addTaigaComment(taigaIssueId, `[REGISTRATION] Registered by ${userEmail}`);
-      }
-
       // Save State
       await saveLocalState(localState);
 
@@ -1497,31 +1218,6 @@ async function handleApi(req, res, url) {
       };
       localState.auditLogs.push(auditLog);
 
-      // Update Taiga
-      if (slot && slot.taigaIssueId) {
-        let existingIssue = null;
-        try {
-          existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
-        } catch (err) {
-          if (err.message.includes("404")) {
-            slot.taigaIssueId = "";
-          } else {
-            throw err;
-          }
-        }
-
-        if (existingIssue) {
-          await taigaFetch(`/issues/${slot.taigaIssueId}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              version: existingIssue.version,
-              assigned_to: null,
-              comment: `[REGISTRATION] Cancelled by ${session.email}`
-            })
-          });
-        }
-      }
-
       await saveLocalState(localState);
 
       // SSE broadcast + Chat notification for cancellation
@@ -1575,19 +1271,6 @@ async function handleApi(req, res, url) {
       };
       localState.auditLogs.push(auditLog);
 
-      // Sync to Taiga comment
-      const slot = localState.scheduleSlots.find(s => s.date === targetDate);
-      if (slot && slot.taigaIssueId) {
-        try {
-          await addTaigaComment(slot.taigaIssueId, `[UPDATE-REQUEST]\nHours: ${requestedHours}\nReason: ${reason}\nEvidence: ${evidenceUrl || ""}\nStatus: PENDING`);
-        } catch (err) {
-          if (err.message.includes("404")) {
-            slot.taigaIssueId = "";
-          } else {
-            throw err;
-          }
-        }
-      }
 
       // Send Chat Alert
       const dateStr = formatDisplayDate(targetDate);
@@ -1634,38 +1317,7 @@ async function handleApi(req, res, url) {
       };
       localState.auditLogs.push(auditLog);
 
-      // Cập nhật Taiga
-      const slot = localState.scheduleSlots.find(s => s.date === requestObj.targetDate);
-      if (slot && slot.taigaIssueId) {
-        let customAttrs = null;
-        try {
-          customAttrs = await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`);
-        } catch (err) {
-          if (err.message.includes("404")) {
-            slot.taigaIssueId = "";
-          } else {
-            throw err;
-          }
-        }
 
-        if (customAttrs) {
-          if (status === "APPROVED") {
-            const hoursAttrId = customAttrMap["hours"];
-            await taigaFetch(`/issues/custom-attributes-values/${slot.taigaIssueId}`, {
-              method: "PATCH",
-              body: JSON.stringify({
-                version: customAttrs.version,
-                attributes_values: {
-                  [hoursAttrId]: String(requestObj.requestedHours)
-                }
-              })
-            });
-            await addTaigaComment(slot.taigaIssueId, `[UPDATE-APPROVED] Approved by ${session.username || session.email.split("@")[0]}`);
-          } else {
-            await addTaigaComment(slot.taigaIssueId, `[UPDATE-REJECTED] Rejected by ${session.username || session.email.split("@")[0]}`);
-          }
-        }
-      }
 
       // Send Chat Alert
       const dateStr = formatDisplayDate(requestObj.targetDate);
@@ -1698,6 +1350,7 @@ async function handleApi(req, res, url) {
       }
 
       const username = normalizedEmail.split("@")[0];
+      const initialPassword = data.password?.trim() || DEFAULT_PASSWORD;
       const newUser = {
         userId: `usr_${username.replace(/\./g, "_")}`,
         email: normalizedEmail,
@@ -1706,27 +1359,10 @@ async function handleApi(req, res, url) {
         role,
         status: "ACTIVE",
         source: "admin_app",
+        passwordHash: hashPassword(initialPassword),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };
-
-      // Add membership to Taiga
-      try {
-        const roleId = role === "ADMIN" ? 2884 : 2886;
-        await taigaFetch("/memberships", {
-          method: "POST",
-          body: JSON.stringify({
-            project: projectId,
-            role: roleId,
-            email: normalizedEmail,
-            username: username
-          })
-        });
-        console.log(`Successfully added user ${normalizedEmail} to Taiga project memberships.`);
-        newUser.source = "taiga";
-      } catch (err) {
-        console.warn(`Failed to add user ${normalizedEmail} to Taiga memberships (keeping local user cache):`, err.message);
-      }
 
       localState.users.push(newUser);
 
@@ -1850,63 +1486,6 @@ async function handleApi(req, res, url) {
         const slotId = `slot_${dateStr.replace(/-/g, "_")}`;
         const existingSlot = localState.scheduleSlots.find(s => s.date === dateStr);
         let taigaIssueId = existingSlot ? existingSlot.taigaIssueId : "";
-
-        // Create issue on Taiga for holiday if not exists
-        if (!taigaIssueId) {
-          try {
-            const createdIssue = await taigaFetch("/issues", {
-              method: "POST",
-              body: JSON.stringify({
-                project: projectId,
-                subject: `[OT-SLOT] ${dateStr} | ${name}`,
-                description: note || "Holiday slot"
-              })
-            });
-            taigaIssueId = createdIssue.id;
-
-            const slotTypeAttrId = customAttrMap["slot_type"];
-            const hoursAttrId = customAttrMap["hours"];
-            const factorAttrId = customAttrMap["man_month_factor"];
-
-            await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
-              method: "PATCH",
-              body: JSON.stringify({
-                version: createdIssue.version || 1,
-                attributes_values: {
-                  [slotTypeAttrId]: holidayType,
-                  [hoursAttrId]: String(hoursPerPerson || 8),
-                  [factorAttrId]: String(manMonthFactor || 1)
-                }
-              })
-            });
-          } catch (err) {
-            console.warn(`Failed to create Taiga issue for holiday ${dateStr}:`, err.message);
-          }
-        } else {
-          // Update Taiga issue attributes
-          try {
-            const existingIssue = await taigaFetch(`/issues/${taigaIssueId}`);
-            const slotTypeAttrId = customAttrMap["slot_type"];
-            const hoursAttrId = customAttrMap["hours"];
-            const factorAttrId = customAttrMap["man_month_factor"];
-
-            const customAttrs = await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`);
-
-            await taigaFetch(`/issues/custom-attributes-values/${taigaIssueId}`, {
-              method: "PATCH",
-              body: JSON.stringify({
-                version: customAttrs.version || 1,
-                attributes_values: {
-                  [slotTypeAttrId]: holidayType,
-                  [hoursAttrId]: String(hoursPerPerson || 8),
-                  [factorAttrId]: String(manMonthFactor || 1)
-                }
-              })
-            });
-          } catch (err) {
-            console.warn(`Failed to update Taiga attributes for holiday ${dateStr}:`, err.message);
-          }
-        }
 
         if (existingSlot) {
           existingSlot.slotType = holidayType;
@@ -2100,23 +1679,6 @@ async function handleApi(req, res, url) {
         afterJson: JSON.stringify({ to: toEmail }),
         createdAt: new Date().toISOString()
       });
-
-      // Update Taiga
-      if (slot.taigaIssueId) {
-        try {
-          const memberships = await taigaFetch(`/memberships?project=${projectId}`);
-          const toTaigaUser = memberships.find(m => (m.user_email || m.email || "").toLowerCase() === toEmail.toLowerCase());
-          const existingIssue = await taigaFetch(`/issues/${slot.taigaIssueId}`);
-          await taigaFetch(`/issues/${slot.taigaIssueId}`, {
-            method: "PATCH",
-            body: JSON.stringify({
-              version: existingIssue.version,
-              assigned_to: toTaigaUser?.user || null,
-              comment: `[SWAP] Admin swapped from ${fromEmail} to ${toEmail}`
-            })
-          });
-        } catch (err) { console.warn("Taiga swap update failed:", err.message); }
-      }
 
       await saveLocalState(localState);
       const dateDisplay = formatDisplayDate(slot.date);
@@ -2332,20 +1894,12 @@ createServer(async (req, res) => {
   }
 }).listen(port, async () => {
   console.log(`OT Support Tool local app: http://localhost:${port}`);
-  console.log(`Taiga integrated backend online. API URL: ${apiUrl}, Project slug: ${projectSlug}`);
+  console.log(`Standalone local database online.`);
 
   // Security warning
   if (JWT_SECRET === "supersecretjwtkeyforotsupporttool2026") {
     console.warn("[SECURITY WARNING] JWT_SECRET is using default value! Set a strong secret in .env.local");
   }
 
-  await initTaigaConfig();
-  if (projectId) {
-    try {
-      await syncFromTaiga();
-      console.log("Initial Taiga data sync completed.");
-    } catch (err) {
-      console.error("Initial Taiga sync failed:", err.message);
-    }
-  }
+  await ensureDefaultPasswords();
 });

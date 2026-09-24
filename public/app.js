@@ -319,7 +319,7 @@ function render() {
       <div class="login-panel" style="min-height:100vh">
         <div class="login-box">
           <h2>Loading OT Support Database</h2>
-          <p class="muted">Loading data from Taiga and local database...</p>
+          <p class="muted">Loading data from database...</p>
           <div class="grid cols-4" style="margin-top:20px">
             <div class="skeleton skeleton-metric"></div>
             <div class="skeleton skeleton-metric"></div>
@@ -338,7 +338,7 @@ function render() {
         <div class="login-box">
           <h2>Database Not Connected</h2>
           <div class="error">${escapeHtml(bootstrapError)}</div>
-          <p class="muted">Cannot load data. Please check your network connection or Taiga API configuration in <strong>.env</strong>, then restart the server.</p>
+          <p class="muted">Cannot load data. Please check your database connection or restart the server.</p>
           <button class="btn primary" data-action="retry-bootstrap">Retry</button>
         </div>
       </div>
@@ -382,7 +382,7 @@ function render() {
           ${navItems.map(([key, icon, label]) => `<button class="${view === key ? "active" : ""}" data-nav="${key}">${icon} ${label}</button>`).join("")}
         </nav>
         <div class="sidebar-footer">
-          Taiga & Local DB<br />
+          OT Support Database<br />
           <span class="kbd">←</span><span class="kbd">→</span> navigate months
         </div>
       </aside>
@@ -433,16 +433,19 @@ function renderLogin(message = "") {
       <section class="login-panel">
         <div class="login-box">
           <h2>Sign in</h2>
-          <p class="muted">Sign in with your Taiga account.</p>
+          <p class="muted">Sign in with your company account.</p>
           ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
+          <div class="notice" style="margin-bottom:16px;font-size:0.85rem">
+            🔑 <strong>Mật khẩu mặc định:</strong> <code>Amaze@2026</code> (có thể đổi tại trang cá nhân).
+          </div>
           <form class="form" id="login-form">
             <div class="field">
-              <label for="email">Taiga Username / Email</label>
-              <input id="email" name="email" type="text" placeholder="Username or Email" required />
+              <label for="email">Email / Username</label>
+              <input id="email" name="email" type="text" placeholder="member@kyanon.digital" required />
             </div>
             <div class="field">
-              <label for="password">Taiga Password</label>
-              <input id="password" name="password" type="password" required />
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password" placeholder="••••••••" required />
             </div>
             <button class="btn primary" type="submit">Login</button>
           </form>
@@ -488,16 +491,10 @@ function renderActionToolbar() {
   return `
     <div class="toolbar">
       <div class="toolbar-group">
-        <div class="export-range">
-          <label>To month:</label>
-          <input type="month" value="${exportToMonth}" data-action="set-export-to-month" />
-        </div>
-      </div>
-      <div class="toolbar-group">
         <button class="btn" data-action="refresh-db" ${isRefreshing ? "disabled" : ""}>
           ${isRefreshing ? '<span class="spinner"></span>Refreshing...' : '🔄 Refresh'}
         </button>
-        <button class="btn primary" data-action="export-preview">📥 Export Excel</button>
+        <button class="btn primary" data-action="export-preview" title="Export report for ${selectedMonth}">📥 Export Excel (${selectedMonth})</button>
       </div>
     </div>
   `;
@@ -1218,7 +1215,7 @@ function renderAdminUsers() {
             </div>
             <button class="btn primary" type="submit">Add user</button>
           </form>
-          <div class="notice" style="margin-top:14px">Thao tác này sẽ cập nhật trực tiếp danh sách thành viên trên local DB và Taiga.</div>
+          <div class="notice" style="margin-top:14px">Mật khẩu mặc định khởi tạo cho thành viên mới là: <strong>Amaze@2026</strong>.</div>
         </div>
       </section>
     </div>
@@ -1228,11 +1225,12 @@ function renderAdminUsers() {
 function renderUserActions(user) {
   // Protect admin based on DB setting, not hardcoded email
   const adminEmail = (state.settings?.find(s => s.key === "admin_email")?.value || "hau.nt@kyanon.digital").toLowerCase();
-  if (user.email.toLowerCase() === adminEmail) return `<span class="muted">Protected admin</span>`;
+  const resetBtn = `<button class="btn small" data-action="reset-user-password" data-email="${escapeHtml(user.email)}" title="Reset password to default (Amaze@2026)">🔑 Reset Pass</button>`;
+  if (user.email.toLowerCase() === adminEmail) return resetBtn;
   if (user.status === "ACTIVE") {
-    return `<button class="btn small danger" data-action="deactivate-user" data-email="${user.email}">Deactivate</button>`;
+    return `${resetBtn} <button class="btn small danger" data-action="deactivate-user" data-email="${user.email}">Deactivate</button>`;
   }
-  return `<button class="btn small primary" data-action="reactivate-user" data-email="${user.email}">Reactivate</button>`;
+  return `${resetBtn} <button class="btn small primary" data-action="reactivate-user" data-email="${user.email}">Reactivate</button>`;
 }
 
 function renderAdminSchedule() {
@@ -1434,9 +1432,7 @@ function bindShellEvents() {
   });
 
   document.querySelector("[data-action='export-preview']")?.addEventListener("click", () => {
-    let url = `/api/export?month=${selectedMonth}`;
-    if (exportToMonth && exportToMonth > selectedMonth) url += `&toMonth=${exportToMonth}`;
-    window.location.href = url;
+    window.location.href = `/api/export?month=${selectedMonth}`;
   });
 
   document.querySelectorAll("[data-action='focus-slot']").forEach((button) => {
@@ -1599,6 +1595,51 @@ function bindShellEvents() {
     });
   });
 
+  document.querySelectorAll("[data-action='reset-user-password']").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const email = btn.dataset.email;
+      if (!confirm(`Are you sure you want to reset password for ${email} to default (Amaze@2026)?`)) return;
+      try {
+        const res = await fetch("/api/admin/users/reset-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email })
+        });
+        const result = await res.json();
+        if (!res.ok || !result.ok) throw new Error(result.error || "Failed to reset password");
+        showToast(result.message || `Password reset for ${email}!`);
+      } catch (err) {
+        showToast(err.message, "error");
+      }
+    });
+  });
+
+  document.querySelector("#change-password-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    if (data.newPassword !== data.confirmPassword) {
+      showToast("New passwords do not match!", "error");
+      return;
+    }
+    if (data.newPassword.length < 6) {
+      showToast("New password must be at least 6 characters!", "error");
+      return;
+    }
+    try {
+      const res = await fetch("/api/auth/change-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: data.currentPassword, newPassword: data.newPassword })
+      });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result.error || "Failed to update password");
+      showToast("Password updated successfully!");
+      event.target.reset();
+    } catch (err) {
+      showToast(err.message, "error");
+    }
+  });
+
   document.querySelector("#holiday-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const data = Object.fromEntries(new FormData(event.currentTarget));
@@ -1734,10 +1775,7 @@ function bindShellEvents() {
     render();
   });
 
-  // Export to-month range
-  document.querySelector("[data-action='set-export-to-month']")?.addEventListener("change", (e) => {
-    exportToMonth = e.target.value;
-  });
+
 
   // Swap ca trực (Admin)
   document.querySelector("[data-action='modal-confirm-swap']")?.addEventListener("click", async () => {
@@ -1915,6 +1953,28 @@ function renderProfile() {
             `).join("") : `<tr><td colspan="4" class="empty">No requests yet.</td></tr>`}
           </tbody>
         </table>
+      </div>
+    </section>
+    <section class="panel" style="margin-top:16px">
+      <div class="panel-header">
+        <h2 class="panel-title">Change Password</h2>
+      </div>
+      <div class="panel-body">
+        <form class="form" id="change-password-form" style="max-width:420px">
+          <div class="field">
+            <label>Current Password</label>
+            <input type="password" name="currentPassword" required placeholder="••••••••" />
+          </div>
+          <div class="field">
+            <label>New Password (min 6 characters)</label>
+            <input type="password" name="newPassword" minlength="6" required placeholder="••••••••" />
+          </div>
+          <div class="field">
+            <label>Confirm New Password</label>
+            <input type="password" name="confirmPassword" minlength="6" required placeholder="••••••••" />
+          </div>
+          <button class="btn primary" type="submit">Update Password</button>
+        </form>
       </div>
     </section>
   `;

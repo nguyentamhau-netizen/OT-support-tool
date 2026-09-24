@@ -1,0 +1,6 @@
+key,value,description,updated_at
+"company_domain","kyanon.digital","Company Domain Restriction",""
+"admin_email","hau.nt@kyanon.digital","Admin Email Account",""
+"default_weekend_role","QC/PO","Default Role Name",""
+"default_day_hours","8","Default Hours Per Day",""
+"google_chat_webhook_url","","Configured setting",""
