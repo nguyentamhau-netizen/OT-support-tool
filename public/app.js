@@ -571,14 +571,14 @@ function renderView() {
   return "";
 }
 
-function renderActionToolbar() {
+function renderActionToolbar(showExport = false) {
   return `
     <div class="toolbar">
       <div class="toolbar-group">
         <button class="btn" data-action="refresh-db" ${isRefreshing ? "disabled" : ""}>
           ${isRefreshing ? '<span class="spinner"></span>Refreshing...' : '🔄 Refresh'}
         </button>
-        <button class="btn primary" data-action="export-preview" title="Export report for ${selectedMonth}">📥 Export Excel (${selectedMonth})</button>
+        ${showExport ? `<button class="btn primary" data-action="export-preview" title="Export report for ${selectedMonth}">📥 Export Excel (${selectedMonth})</button>` : ""}
       </div>
     </div>
   `;
@@ -636,7 +636,7 @@ function renderDashboard() {
 
   if (slots.length === 0) {
     return `
-      ${renderActionToolbar()}
+      ${renderActionToolbar(true)}
       <div class="grid cols-4">
         ${metric("Support days", 0)}
         ${metric("Open slots", 0)}
@@ -669,7 +669,7 @@ function renderDashboard() {
   const filteredSlots = slotFilter === "ALL" ? slots : slots.filter(s => s.status === slotFilter);
 
   return `
-    ${renderActionToolbar()}
+    ${renderActionToolbar(true)}
     <div class="grid cols-4">
       ${metric("Support days", slots.length)}
       ${metric("Open slots", openSlots)}
