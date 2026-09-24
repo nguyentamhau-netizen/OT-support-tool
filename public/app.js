@@ -1325,6 +1325,7 @@ function renderAdminSchedule() {
             <button class="btn primary small" type="submit">Save Settings</button>
             <button class="btn small" type="button" data-action="test-chat">Send Test Message</button>
             <button class="btn small" type="button" data-action="trigger-reminders">Send Tomorrow's Reminders</button>
+            <button class="btn small" type="button" data-action="sync-taiga" title="Đồng bộ / Sao lưu toàn bộ dữ liệu ca trực và đăng ký từ Taiga về hệ thống">🔄 Sync/Backup from Taiga</button>
           </div>
         </form>
         <div class="notice" style="margin-top: 14px; margin-bottom: 0;">
@@ -1732,6 +1733,32 @@ function bindShellEvents() {
       showToast("Error: " + err.message, "error");
     } finally {
       btn.disabled = false;
+    }
+  });
+
+  document.querySelector("[data-action='sync-taiga']")?.addEventListener("click", async () => {
+    if (!confirm("Bạn có muốn đồng bộ toàn bộ dữ liệu ca trực và đăng ký từ Taiga về hệ thống không?")) return;
+    const btn = document.querySelector("[data-action='sync-taiga']");
+    if (btn) btn.disabled = true;
+    showToast("Đang đồng bộ dữ liệu từ Taiga...", "info");
+    try {
+      const response = await fetch("/api/admin/taiga-sync", { method: "POST" });
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        showToast(`Đồng bộ thành công! (${data.registrationsCount || 0} lượt đăng ký)`, "success");
+        if (data.state) {
+          state = { ...emptyState(), ...data.state };
+          render();
+        } else {
+          await loadStateFromDb(false, selectedMonth);
+        }
+      } else {
+        showToast(`Đồng bộ thất bại: ${data.error || "Lỗi kết nối Taiga"}`, "error");
+      }
+    } catch (err) {
+      showToast("Lỗi: " + err.message, "error");
+    } finally {
+      if (btn) btn.disabled = false;
     }
   });
 

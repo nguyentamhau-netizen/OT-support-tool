@@ -11,6 +11,11 @@ const root = join(process.cwd(), "public");
 const DEFAULT_PASSWORD = process.env.DEFAULT_PASSWORD || "Amaze@2026";
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretjwtkeyforotsupporttool2026";
 const DB_DIR = join(process.cwd(), "db_cache");
+const apiUrl = process.env.TAIGA_API_URL || "https://projects.kyanon.digital/api/v1";
+const projectSlug = process.env.TAIGA_PROJECT_SLUG || "amaze-ot-log";
+let cachedAdminToken = process.env.TAIGA_ADMIN_TOKEN || null;
+let projectId = null;
+let customAttrMap = {};
 
 // SSE (Server-Sent Events) connections for real-time updates
 const sseClients = new Set();
@@ -601,6 +606,365 @@ function remainingSlots(slot, capacity, registrations) {
   return Math.max(0, (capacity ? Number(capacity.requiredCount) : 0) - activeRegs.length);
 }
 
+// Taiga API helpers
+async function getAdminToken(forceRefresh = false) {
+  if (cachedAdminToken && !forceRefresh) {
+    return cachedAdminToken;
+  }
+
+  const username = process.env.TAIGA_USERNAME;
+  const password = process.env.TAIGA_PASSWORD;
+
+  if (!username || !password) {
+    return process.env.TAIGA_ADMIN_TOKEN || "";
+  }
+
+  try {
+    console.log("[TAIGA-AUTH] Requesting new token using credentials...");
+    const authRes = await fetch(`${apiUrl}/auth`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "normal", username, password })
+    });
+
+    if (!authRes.ok) {
+      throw new Error(`Authentication failed: ${authRes.status} ${await authRes.text()}`);
+    }
+
+    const userData = await authRes.json();
+    if (userData.auth_token) {
+      cachedAdminToken = userData.auth_token;
+      console.log("[TAIGA-AUTH] New token acquired successfully.");
+      return cachedAdminToken;
+    } else {
+      throw new Error("No auth_token returned from Taiga auth endpoint.");
+    }
+  } catch (err) {
+    console.error("[TAIGA-AUTH] Failed to login to Taiga:", err.message);
+    return process.env.TAIGA_ADMIN_TOKEN || "";
+  }
+}
+
+async function taigaFetch(path, options = {}, isRetry = false) {
+  const token = await getAdminToken();
+  const response = await fetch(`${apiUrl}${path}`, {
+    ...options,
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      ...(options.headers || {})
+    }
+  });
+
+  if (response.status === 401 && !isRetry) {
+    console.log("[TAIGA-AUTH] Received 401 from Taiga. Retrying with refreshed token...");
+    await getAdminToken(true);
+    return taigaFetch(path, options, true);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Taiga API failed: ${response.status} ${await response.text()}`);
+  }
+  if (response.status === 204) return null;
+  return response.json();
+}
+
+async function initTaigaConfig() {
+  const token = await getAdminToken();
+  if (!token) return;
+  try {
+    const project = await taigaFetch(`/projects/by_slug?slug=${projectSlug}`);
+    projectId = project.id;
+
+    try {
+      const attrs = await taigaFetch(`/issue-custom-attributes?project=${projectId}`);
+      attrs.forEach(attr => {
+        customAttrMap[attr.name.toLowerCase()] = attr.id;
+      });
+    } catch (err) {
+      console.warn("Could not load custom attributes:", err.message);
+    }
+  } catch (err) {
+    console.error("Taiga connection error during startup:", err.message);
+  }
+}
+
+async function syncUsersFromTaiga() {
+  if (!projectId) return [];
+  const memberships = await taigaFetch(`/memberships?project=${projectId}`);
+  const localUsers = await readCSVTable("users");
+
+  const taigaUsers = memberships
+    .filter(m => m.user_email || m.email)
+    .map(m => {
+      const email = (m.user_email || m.email).toLowerCase();
+      const isUserAdmin = m.is_admin || m.role_name === "Owner" || m.role_name === "Admin" || email === "hau.nt@kyanon.digital";
+      const username = email.split("@")[0];
+      const existingUser = localUsers.find(u => u.email.toLowerCase() === email);
+      return {
+        userId: existingUser?.userId || `usr_${username.replace(/\./g, "_")}`,
+        email: email,
+        username: username,
+        displayName: m.full_name || existingUser?.displayName || username,
+        role: isUserAdmin ? "ADMIN" : (existingUser?.role || "MEMBER"),
+        status: existingUser?.status || "ACTIVE",
+        source: existingUser?.source || "taiga",
+        passwordHash: existingUser?.passwordHash || hashPassword(DEFAULT_PASSWORD),
+        createdAt: existingUser?.createdAt || m.created_at || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+    });
+
+  // Merge: keep all taiga users, and add local admin app users that are not already present in taiga users list
+  const mergedUsers = [...taigaUsers];
+  localUsers.forEach(lu => {
+    if (!mergedUsers.some(tu => tu.email.toLowerCase() === lu.email.toLowerCase())) {
+      mergedUsers.push(lu);
+    }
+  });
+
+  await writeCSVTable("users", mergedUsers);
+  return mergedUsers;
+}
+
+async function syncFromTaiga() {
+  await ensureDbDir();
+  if (!projectId) {
+    await initTaigaConfig();
+  }
+  if (!projectId) {
+    console.warn("[TAIGA-SYNC] Cannot sync: Project ID not found.");
+    return { ok: false, error: "Project ID not found on Taiga" };
+  }
+
+  const users = await syncUsersFromTaiga();
+  const taigaUserIdToEmail = {};
+  const memberships = await taigaFetch(`/memberships?project=${projectId}`);
+  memberships.forEach(m => {
+    const email = m.user_email || m.email;
+    if (m.user && email) {
+      taigaUserIdToEmail[m.user] = email.toLowerCase();
+    }
+  });
+
+  let issues = [];
+  let page = 1;
+  while (true) {
+    const pageIssues = await taigaFetch(`/issues?project=${projectId}&page_size=100&page=${page}`);
+    if (!pageIssues || pageIssues.length === 0) break;
+    issues = issues.concat(pageIssues);
+    if (pageIssues.length < 100) break;
+    page++;
+  }
+
+  // Load existing local state to safely merge with any Excel-restored data
+  const scheduleSlots = await readCSVTable("schedule_slots");
+  const capacities = await readCSVTable("slot_capacities");
+  const registrations = await readCSVTable("registrations");
+  const holidaySettings = await readCSVTable("holiday_settings");
+  const updateRequests = await readCSVTable("update_requests");
+  const auditLogs = await readCSVTable("audit_logs");
+
+  for (const issue of issues) {
+    const slotMatch = issue.subject.match(/^\[OT-SLOT\]\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.*)/i);
+    if (!slotMatch) continue;
+
+    const date = slotMatch[1];
+    const title = slotMatch[2];
+    const slotId = `slot_${date.replace(/-/g, "_")}`;
+    const [year, monthIndex] = date.split("-").map(Number);
+    const month = `${year}-${String(monthIndex).padStart(2, "0")}`;
+    const slotDate = new Date(year, monthIndex - 1, Number(date.split("-")[2]));
+    const dayOfWeek = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][slotDate.getDay()];
+
+    let slotType = "WEEKEND";
+    let hours = 8;
+    let manMonthFactor = 1;
+
+    try {
+      const attrVals = await taigaFetch(`/issues/custom-attributes-values/${issue.id}`);
+      const vals = attrVals.attributes_values || {};
+      const slotTypeAttrId = customAttrMap["slot_type"];
+      const hoursAttrId = customAttrMap["hours"];
+      const factorAttrId = customAttrMap["man_month_factor"];
+
+      if (vals[slotTypeAttrId]) slotType = vals[slotTypeAttrId];
+      if (vals[hoursAttrId]) hours = Number(vals[hoursAttrId]) || 8;
+      if (vals[factorAttrId]) manMonthFactor = Number(vals[factorAttrId]) || 1;
+    } catch {
+      // Attributes might not be loaded or set yet
+    }
+
+    const existingSlotIndex = scheduleSlots.findIndex(s => s.date === date);
+    if (existingSlotIndex === -1) {
+      scheduleSlots.push({
+        slotId,
+        date,
+        month,
+        dayOfWeek,
+        slotType,
+        title,
+        status: issue.assigned_to ? "FULL" : "OPEN",
+        createdBy: "taiga",
+        createdAt: issue.created_date,
+        updatedAt: issue.modified_date,
+        note: issue.description || "",
+        taigaIssueId: issue.id
+      });
+
+      const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
+      if (!capacities.some(c => c.slotId === slotId)) {
+        capacities.push({
+          capacityId,
+          slotId,
+          roleName: "QC/PO",
+          requiredCount: 1,
+          hoursPerPerson: hours,
+          manMonthFactor,
+          createdAt: issue.created_date,
+          updatedAt: issue.modified_date,
+          note: ""
+        });
+      }
+
+      if (slotType === "HOLIDAY" || slotType === "TET") {
+        if (!holidaySettings.some(h => h.date === date)) {
+          holidaySettings.push({
+            holidayId: `hol_${date.replace(/-/g, "_")}`,
+            date,
+            name: title,
+            holidayType: slotType,
+            requiredRole: "QC/PO",
+            requiredCount: 1,
+            hoursPerPerson: hours,
+            manMonthFactor,
+            note: issue.description || "",
+            createdBy: "taiga",
+            createdAt: issue.created_date,
+            updatedAt: issue.modified_date
+          });
+        }
+      }
+    } else {
+      scheduleSlots[existingSlotIndex].taigaIssueId = issue.id;
+      if (issue.assigned_to) {
+        scheduleSlots[existingSlotIndex].status = "FULL";
+      }
+    }
+
+    if (issue.assigned_to) {
+      const userEmail = taigaUserIdToEmail[issue.assigned_to] || "";
+      if (userEmail) {
+        const username = userEmail.split("@")[0];
+        const capacityId = `cap_${date.replace(/-/g, "_")}_qc_po`;
+        
+        const registrationExists = registrations.some(r => 
+          r.slotId === slotId && 
+          r.userEmail.toLowerCase() === userEmail.toLowerCase() && 
+          r.status === "ACTIVE"
+        );
+
+        if (!registrationExists) {
+          registrations.push({
+            registrationId: `reg_${issue.id}_${username.replace(/\./g, "_")}`,
+            slotId,
+            capacityId,
+            userEmail,
+            registeredByEmail: userEmail,
+            status: "ACTIVE",
+            approvedStatus: "AUTO_APPROVED",
+            source: "taiga_sync",
+            createdAt: issue.created_date,
+            updatedAt: issue.modified_date,
+            note: "Synced from Taiga assignment"
+          });
+        }
+      }
+    }
+
+    try {
+      const history = await taigaFetch(`/history/issue/${issue.id}`);
+      for (const entry of history) {
+        if (!entry.comment) continue;
+        const commentText = entry.comment;
+
+        if (commentText.includes("[UPDATE-REQUEST]")) {
+          const reqId = `req_${entry.id}`;
+          if (!updateRequests.some(u => u.requestId === reqId)) {
+            let requestedHours = 8;
+            let reason = "";
+            let evidenceUrl = "";
+
+            const lines = commentText.split("\n");
+            lines.forEach(line => {
+              if (line.toLowerCase().startsWith("hours:")) {
+                requestedHours = Number(line.split(":")[1].trim()) || 8;
+              } else if (line.toLowerCase().startsWith("reason:")) {
+                reason = line.split(":")[1].trim();
+              } else if (line.toLowerCase().startsWith("evidence:")) {
+                evidenceUrl = line.split(":")[1].trim();
+              }
+            });
+
+            let status = "PENDING";
+            let reviewedBy = "";
+            let reviewedAt = "";
+
+            for (const subEntry of history) {
+              if (!subEntry.comment) continue;
+              if (new Date(subEntry.created_date) <= new Date(entry.created_date)) continue;
+
+              if (subEntry.comment.includes("[UPDATE-APPROVED]")) {
+                status = "APPROVED";
+                reviewedBy = subEntry.user.username;
+                reviewedAt = subEntry.created_date;
+              } else if (subEntry.comment.includes("[UPDATE-REJECTED]")) {
+                status = "REJECTED";
+                reviewedBy = subEntry.user.username;
+                reviewedAt = subEntry.created_date;
+              }
+            }
+
+            const requesterEmail = taigaUserIdToEmail[entry.user.id] || "";
+            updateRequests.push({
+              requestId: reqId,
+              userEmail: requesterEmail,
+              targetRegistrationId: `reg_${issue.id}_${requesterEmail.split("@")[0].replace(/\./g, "_")}`,
+              targetDate: date,
+              requestedHours,
+              reason,
+              evidenceUrl,
+              status,
+              adminNote: "",
+              reviewedBy,
+              createdAt: entry.created_date,
+              reviewedAt
+            });
+          }
+        }
+      }
+    } catch {
+      // History fetching might fail for new items
+    }
+  }
+
+  // Ensure slot status is accurate based on active registrations
+  for (const slot of scheduleSlots) {
+    const hasActiveReg = registrations.some(r => r.slotId === slot.slotId && r.status === "ACTIVE");
+    if (hasActiveReg) slot.status = "FULL";
+  }
+
+  await writeCSVTable("schedule_slots", scheduleSlots);
+  await writeCSVTable("slot_capacities", capacities);
+  await writeCSVTable("registrations", registrations);
+  await writeCSVTable("holiday_settings", holidaySettings);
+  await writeCSVTable("update_requests", updateRequests);
+  await writeCSVTable("audit_logs", auditLogs);
+
+  console.log(`[TAIGA-SYNC] Synced ${issues.length} issues, ${registrations.length} registrations total.`);
+  return { ok: true, issuesCount: issues.length, registrationsCount: registrations.length };
+}
+
 async function ensureMonthBackend(month) {
   if (!month || !/^\d{4}-\d{2}$/.test(month)) return;
 
@@ -1157,6 +1521,22 @@ async function handleApi(req, res, url) {
       // Save State
       await saveLocalState(localState);
 
+      // Background sync to Taiga if connected
+      if (projectId && slot.taigaIssueId) {
+        try {
+          const memberships = await taigaFetch(`/memberships?project=${projectId}`);
+          const taigaUser = memberships.find(m => (m.user_email || m.email || "").toLowerCase() === userEmail.toLowerCase());
+          if (taigaUser && taigaUser.user) {
+            await taigaFetch(`/issues/${slot.taigaIssueId}`, {
+              method: "PATCH",
+              body: JSON.stringify({ assigned_to: taigaUser.user })
+            });
+          }
+        } catch (taigaErr) {
+          console.warn("[TAIGA-SYNC] Background Taiga issue assign warning:", taigaErr.message);
+        }
+      }
+
       // SSE broadcast + Chat notification for registration
       const displayName = user.displayName || userEmail;
       const dateDisplay = formatDisplayDate(slot.date);
@@ -1219,6 +1599,18 @@ async function handleApi(req, res, url) {
       localState.auditLogs.push(auditLog);
 
       await saveLocalState(localState);
+
+      // Background sync to Taiga if connected
+      if (projectId && slot?.taigaIssueId) {
+        try {
+          await taigaFetch(`/issues/${slot.taigaIssueId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ assigned_to: null })
+          });
+        } catch (taigaErr) {
+          console.warn("[TAIGA-SYNC] Background Taiga issue unassign warning:", taigaErr.message);
+        }
+      }
 
       // SSE broadcast + Chat notification for cancellation
       const cancelUser = localState.users.find(u => u.email.toLowerCase() === registration.userEmail.toLowerCase());
@@ -1623,6 +2015,19 @@ async function handleApi(req, res, url) {
       return;
     }
 
+    if (req.method === "POST" && url.pathname === "/api/admin/taiga-sync") {
+      if (!session || session.role !== "ADMIN") {
+        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
+      }
+      try {
+        const result = await syncFromTaiga();
+        sendJson(res, 200, { ok: true, ...result, state: await loadLocalState() });
+      } catch (err) {
+        sendJson(res, 500, { ok: false, error: err.message });
+      }
+      return;
+    }
+
     // ========== Phase 4: New API Endpoints ==========
 
     // Swap ca trực (Admin only)
@@ -1902,4 +2307,17 @@ createServer(async (req, res) => {
   }
 
   await ensureDefaultPasswords();
+
+  if (process.env.TAIGA_ADMIN_TOKEN || (process.env.TAIGA_USERNAME && process.env.TAIGA_PASSWORD)) {
+    try {
+      console.log("[TAIGA-SYNC] Syncing existing registered data from Taiga...");
+      await initTaigaConfig();
+      if (projectId) {
+        await syncFromTaiga();
+        console.log("[TAIGA-SYNC] Taiga data sync completed successfully.");
+      }
+    } catch (err) {
+      console.error("[TAIGA-SYNC] Taiga sync on startup failed:", err.message);
+    }
+  }
 });
