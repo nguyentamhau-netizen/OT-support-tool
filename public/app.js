@@ -381,10 +381,6 @@ function render() {
         <nav class="nav">
           ${navItems.map(([key, icon, label]) => `<button class="${view === key ? "active" : ""}" data-nav="${key}">${icon} ${label}</button>`).join("")}
         </nav>
-        <div class="sidebar-footer">
-          OT Support Database<br />
-          <span class="kbd">←</span><span class="kbd">→</span> navigate months
-        </div>
       </aside>
       <main class="main">
         <header class="topbar">
