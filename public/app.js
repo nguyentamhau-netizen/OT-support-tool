@@ -421,7 +421,12 @@ function pageTitle() {
   return titles[view] || "OT Support Tool";
 }
 
-function renderLogin(message = "") {
+let authMode = "signin";
+
+function renderLogin(message = "", initialMode = authMode) {
+  authMode = initialMode;
+  const isSignIn = authMode === "signin";
+
   app.innerHTML = `
     <div class="login">
       <section class="login-visual">
@@ -432,29 +437,77 @@ function renderLogin(message = "") {
       </section>
       <section class="login-panel">
         <div class="login-box">
-          <h2>Sign in</h2>
-          <p class="muted">Sign in with your company account.</p>
-          ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
-          <div class="notice" style="margin-bottom:16px;font-size:0.85rem">
-            🔑 <strong>Mật khẩu mặc định:</strong> <code>Amaze@2026</code> (có thể đổi tại trang cá nhân).
+          <div class="auth-tabs">
+            <button class="auth-tab ${isSignIn ? "active" : ""}" data-auth-tab="signin">Sign In</button>
+            <button class="auth-tab ${!isSignIn ? "active" : ""}" data-auth-tab="signup">Sign Up</button>
           </div>
-          <form class="form" id="login-form">
-            <div class="field">
-              <label for="email">Email / Username</label>
-              <input id="email" name="email" type="text" placeholder="member@kyanon.digital" required />
+
+          <h2>${isSignIn ? "Sign In" : "Create Account"}</h2>
+          <p class="muted">${isSignIn ? "Sign in with your company account." : "Register a new company member account."}</p>
+          ${message ? `<div class="error">${escapeHtml(message)}</div>` : ""}
+
+          ${isSignIn ? `
+            <div class="notice" style="margin-bottom:16px;font-size:0.85rem">
+              🔑 <strong>Default Password:</strong> <code>Amaze@2026</code> (changeable in profile).
             </div>
-            <div class="field">
-              <label for="password">Password</label>
-              <input id="password" name="password" type="password" placeholder="••••••••" required />
+            <form class="form" id="login-form">
+              <div class="field">
+                <label for="email">Email / Username</label>
+                <input id="email" name="email" type="text" placeholder="member@kyanon.digital" required />
+              </div>
+              <div class="field">
+                <label for="password">Password</label>
+                <input id="password" name="password" type="password" placeholder="••••••••" required />
+              </div>
+              <button class="btn primary" type="submit">Sign In</button>
+            </form>
+            <div class="auth-switch">
+              Don't have an account? <a data-auth-switch="signup">Sign Up</a>
             </div>
-            <button class="btn primary" type="submit">Login</button>
-          </form>
+          ` : `
+            <form class="form" id="signup-form">
+              <div class="field">
+                <label for="signup-name">Full Name</label>
+                <input id="signup-name" name="displayName" type="text" placeholder="Your Name" required />
+              </div>
+              <div class="field">
+                <label for="signup-email">Company Email</label>
+                <input id="signup-email" name="email" type="email" placeholder="name@kyanon.digital" required />
+              </div>
+              <div class="field">
+                <label for="signup-password">Password</label>
+                <input id="signup-password" name="password" type="password" placeholder="At least 6 characters" minlength="6" required />
+              </div>
+              <div class="field">
+                <label for="signup-confirm">Confirm Password</label>
+                <input id="signup-confirm" name="confirmPassword" type="password" placeholder="••••••••" minlength="6" required />
+              </div>
+              <button class="btn primary" type="submit">Create Account</button>
+            </form>
+            <div class="auth-switch">
+              Already have an account? <a data-auth-switch="signin">Sign In</a>
+            </div>
+          `}
         </div>
       </section>
     </div>
   `;
 
-  document.querySelector("#login-form").addEventListener("submit", async (event) => {
+  // Tab switching
+  document.querySelectorAll("[data-auth-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      renderLogin("", btn.dataset.authTab);
+    });
+  });
+
+  document.querySelectorAll("[data-auth-switch]").forEach((link) => {
+    link.addEventListener("click", () => {
+      renderLogin("", link.dataset.authSwitch);
+    });
+  });
+
+  // Login submit handler
+  document.querySelector("#login-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
     const email = formData.get("email").trim().toLowerCase();
@@ -472,7 +525,38 @@ function renderLogin(message = "") {
       saveSession({ email: data.user.email, role: data.user.role || "MEMBER" });
       await loadStateFromDb();
     } catch (err) {
-      renderLogin(err.message);
+      renderLogin(err.message, "signin");
+    }
+  });
+
+  // Signup submit handler
+  document.querySelector("#signup-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const displayName = formData.get("displayName").trim();
+    const email = formData.get("email").trim().toLowerCase();
+    const password = formData.get("password");
+    const confirmPassword = formData.get("confirmPassword");
+
+    if (password !== confirmPassword) {
+      renderLogin("Passwords do not match.", "signup");
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/auth/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ displayName, email, password })
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "Sign up failed");
+
+      saveSession({ email: data.user.email, role: data.user.role || "MEMBER" });
+      showToast("Account created successfully! Welcome.", "success");
+      await loadStateFromDb();
+    } catch (err) {
+      renderLogin(err.message, "signup");
     }
   });
 }
@@ -1215,7 +1299,7 @@ function renderAdminUsers() {
             </div>
             <button class="btn primary" type="submit">Add user</button>
           </form>
-          <div class="notice" style="margin-top:14px">Mật khẩu mặc định khởi tạo cho thành viên mới là: <strong>Amaze@2026</strong>.</div>
+          <div class="notice" style="margin-top:14px">Default password initialized for new members: <strong>Amaze@2026</strong>.</div>
         </div>
       </section>
     </div>
@@ -1325,7 +1409,7 @@ function renderAdminSchedule() {
             <button class="btn primary small" type="submit">Save Settings</button>
             <button class="btn small" type="button" data-action="test-chat">Send Test Message</button>
             <button class="btn small" type="button" data-action="trigger-reminders">Send Tomorrow's Reminders</button>
-            <button class="btn small" type="button" data-action="sync-taiga" title="Đồng bộ / Sao lưu toàn bộ dữ liệu ca trực và đăng ký từ Taiga về hệ thống">🔄 Sync/Backup from Taiga</button>
+            <button class="btn small" type="button" data-action="sync-taiga" title="Sync and backup all shift schedules and registrations from Taiga into the system">🔄 Sync/Backup from Taiga</button>
           </div>
         </form>
         <div class="notice" style="margin-top: 14px; margin-bottom: 0;">
@@ -1737,15 +1821,15 @@ function bindShellEvents() {
   });
 
   document.querySelector("[data-action='sync-taiga']")?.addEventListener("click", async () => {
-    if (!confirm("Bạn có muốn đồng bộ toàn bộ dữ liệu ca trực và đăng ký từ Taiga về hệ thống không?")) return;
+    if (!confirm("Do you want to sync and backup all schedule slots and registrations from Taiga into the system?")) return;
     const btn = document.querySelector("[data-action='sync-taiga']");
     if (btn) btn.disabled = true;
-    showToast("Đang đồng bộ dữ liệu từ Taiga...", "info");
+    showToast("Syncing data from Taiga...", "info");
     try {
       const response = await fetch("/api/admin/taiga-sync", { method: "POST" });
       const data = await response.json();
       if (response.ok && data.ok) {
-        showToast(`Đồng bộ thành công! (${data.registrationsCount || 0} lượt đăng ký)`, "success");
+        showToast(`Sync completed successfully! (${data.registrationsCount || 0} registrations)`, "success");
         if (data.state) {
           state = { ...emptyState(), ...data.state };
           render();
@@ -1753,10 +1837,10 @@ function bindShellEvents() {
           await loadStateFromDb(false, selectedMonth);
         }
       } else {
-        showToast(`Đồng bộ thất bại: ${data.error || "Lỗi kết nối Taiga"}`, "error");
+        showToast(`Sync failed: ${data.error || "Taiga connection error"}`, "error");
       }
     } catch (err) {
-      showToast("Lỗi: " + err.message, "error");
+      showToast("Error: " + err.message, "error");
     } finally {
       if (btn) btn.disabled = false;
     }
@@ -1804,7 +1888,7 @@ function bindShellEvents() {
 
 
 
-  // Swap ca trực (Admin)
+  // Swap shift (Admin)
   document.querySelector("[data-action='modal-confirm-swap']")?.addEventListener("click", async () => {
     if (!modal?.slotId) return;
     const slotId = modal.slotId;

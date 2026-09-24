@@ -1322,6 +1322,85 @@ async function handleApi(req, res, url) {
       }));
     }
 
+    if (req.method === "POST" && url.pathname === "/api/auth/signup") {
+      const { email, displayName, password } = await readJson(req);
+      if (!email || !displayName || !password) {
+        return sendJson(res, 400, { ok: false, error: "Email, Full Name, and Password are required." });
+      }
+
+      const normalizedEmail = email.trim().toLowerCase();
+      const domain = (await getSettingValue("company_domain", "kyanon.digital")).toLowerCase();
+
+      // Check email format and domain restriction
+      if (!normalizedEmail.includes("@") || !normalizedEmail.endsWith(`@${domain}`)) {
+        return sendJson(res, 400, { ok: false, error: `Only company email addresses (@${domain}) are allowed.` });
+      }
+
+      if (password.length < 6) {
+        return sendJson(res, 400, { ok: false, error: "Password must be at least 6 characters long." });
+      }
+
+      const localUsers = await readCSVTable("users");
+      const exists = localUsers.some(u => u.email.toLowerCase() === normalizedEmail);
+      if (exists) {
+        return sendJson(res, 400, { ok: false, error: "An account with this email already exists." });
+      }
+
+      const username = normalizedEmail.split("@")[0];
+      const adminEmail = (await getSettingValue("admin_email", "hau.nt@kyanon.digital")).toLowerCase();
+      const isUserAdmin = normalizedEmail === adminEmail;
+
+      const newUser = {
+        userId: `usr_${username.replace(/\./g, "_")}`,
+        email: normalizedEmail,
+        username,
+        displayName: displayName.trim(),
+        role: isUserAdmin ? "ADMIN" : "MEMBER",
+        status: "ACTIVE",
+        source: "signup",
+        passwordHash: hashPassword(password),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      localUsers.push(newUser);
+      await writeCSVTable("users", localUsers);
+
+      const auditLogs = await readCSVTable("audit_logs");
+      auditLogs.push({
+        logId: `log_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        actorEmail: normalizedEmail,
+        action: "USER_SIGNUP",
+        entityType: "user",
+        entityId: normalizedEmail,
+        beforeJson: "",
+        afterJson: JSON.stringify({ email: normalizedEmail, displayName: newUser.displayName, role: newUser.role }),
+        createdAt: new Date().toISOString()
+      });
+      await writeCSVTable("audit_logs", auditLogs);
+
+      // Automatically sign in the new user
+      const token = signToken({
+        email: normalizedEmail,
+        username: newUser.username,
+        displayName: newUser.displayName,
+        role: newUser.role
+      });
+
+      res.writeHead(200, {
+        "Set-Cookie": `session_token=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000`,
+        "Content-Type": "application/json"
+      });
+      return res.end(JSON.stringify({
+        ok: true,
+        user: {
+          email: normalizedEmail,
+          displayName: newUser.displayName,
+          role: newUser.role
+        }
+      }));
+    }
+
     if (req.method === "POST" && url.pathname === "/api/auth/logout") {
       res.writeHead(200, {
         "Set-Cookie": "session_token=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0",
@@ -1464,7 +1543,7 @@ async function handleApi(req, res, url) {
       const user = localState.users.find(u => u.email.toLowerCase() === userEmail.toLowerCase());
 
       if (!slot || !capacity || !user || user.status !== "ACTIVE") {
-        return sendJson(res, 400, { ok: false, error: "User hoặc slot không khả dụng." });
+        return sendJson(res, 400, { ok: false, error: "User or slot is unavailable." });
       }
 
       const registeredByEmail = session.email;
@@ -1472,15 +1551,15 @@ async function handleApi(req, res, url) {
 
       // Check validation
       if (isPastDate(slot.date) && !isAdminUser) {
-        return sendJson(res, 400, { ok: false, error: "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request." });
+        return sendJson(res, 400, { ok: false, error: "This date has passed. Please create an update request if needed." });
       }
 
       if (remainingSlots(slot, capacity, localState.registrations) <= 0) {
-        return sendJson(res, 400, { ok: false, error: "Slot này đã đủ người đăng ký." });
+        return sendJson(res, 400, { ok: false, error: "This slot has reached maximum capacity." });
       }
 
       if (!isAdminUser && findUserMonthlyRegistration(localState.registrations, localState.scheduleSlots, slot.month, userEmail)) {
-        return sendJson(res, 400, { ok: false, error: "Bạn đã đăng ký một ngày trực trong tháng này rồi." });
+        return sendJson(res, 400, { ok: false, error: "You have already registered for a slot this month." });
       }
 
       // 1. Add registration
@@ -1558,7 +1637,7 @@ async function handleApi(req, res, url) {
       const localState = await loadLocalState();
       const registration = localState.registrations.find(r => r.registrationId === registrationId);
       if (!registration) {
-        return sendJson(res, 404, { ok: false, error: "Không tìm thấy đăng ký." });
+        return sendJson(res, 404, { ok: false, error: "Registration not found." });
       }
 
       const slot = localState.scheduleSlots.find(s => s.slotId === registration.slotId);
@@ -1566,11 +1645,11 @@ async function handleApi(req, res, url) {
       const isAdminUser = session.role === "ADMIN";
 
       if (slot && isPastDate(slot.date) && !isAdminUser) {
-        return sendJson(res, 400, { ok: false, error: "Ngày đã qua. Nếu cần chỉnh sửa, vui lòng tạo update request." });
+        return sendJson(res, 400, { ok: false, error: "This date has passed. Please create an update request if needed." });
       }
 
       if (!isAdminUser && registration.userEmail.toLowerCase() !== session.email.toLowerCase()) {
-        return sendJson(res, 403, { ok: false, error: "Bạn chỉ có thể hủy đăng ký của chính mình." });
+        return sendJson(res, 403, { ok: false, error: "You can only cancel your own registration." });
       }
 
       // Update registration status
@@ -2049,7 +2128,7 @@ async function handleApi(req, res, url) {
       if (!fromUser || !toUser) return sendJson(res, 400, { ok: false, error: "User not found or inactive." });
 
       const fromReg = localState.registrations.find(r => r.slotId === slotId && r.userEmail.toLowerCase() === fromEmail.toLowerCase() && r.status === "ACTIVE");
-      if (!fromReg) return sendJson(res, 400, { ok: false, error: "Người được swap chưa đăng ký slot này." });
+      if (!fromReg) return sendJson(res, 400, { ok: false, error: "The member to be swapped is not registered for this slot." });
 
       // Cancel old registration
       fromReg.status = "CANCELLED";
