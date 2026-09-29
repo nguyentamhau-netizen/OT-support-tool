@@ -1,30 +1,48 @@
 name: Google Chat Duty Reminder (Render Wakeup & Trigger)
 
 on:
-  # Tạm tắt cronjob tự động:
-  # schedule:
-  #   # 17:00 chiều Thứ Sáu Việt Nam (GMT+7) = 10:00 sáng Thứ Sáu UTC (GMT+0)
-  #   - cron: '0 10 * * 5'
+  schedule:
+    # 17:00 chiều Thứ Sáu Việt Nam (GMT+7) = 10:00 sáng Thứ Sáu UTC (GMT+0)
+    - cron: '0 10 * * 5'
   
   # Cho phép kích hoạt thủ công từ giao diện GitHub để test khi cần
   workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bỏ qua kiểm tra giới hạn thời gian (Force trigger)'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   trigger-render:
     runs-on: ubuntu-latest
     steps:
       - name: Wake up Render Service
+        env:
+          RENDER_APP_URL: ${{ secrets.RENDER_APP_URL }}
         run: |
-          echo "Đang đánh thức server Render..."
-          curl -s -o /dev/null --max-time 60 "${{ secrets.RENDER_APP_URL }}/api/health" || true
+          URL="${RENDER_APP_URL%/}"
+          echo "Đang đánh thức server Render tại: $URL/api/health"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 "$URL/api/health" || echo "TIMEOUT/ERR")
+          echo "HTTP response ban đầu: $HTTP_CODE"
 
       - name: Wait for Render to fully spin up
-        run: sleep 60
+        run: |
+          echo "Đợi 30 giây để server Render hoàn tất khởi động và tải dữ liệu..."
+          sleep 30
 
       - name: Trigger Render Cron API
+        env:
+          RENDER_APP_URL: ${{ secrets.RENDER_APP_URL }}
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+          FORCE_MODE: ${{ inputs.force || 'false' }}
         run: |
-          echo "Đang gọi API gửi tin nhắn nhắc lịch..."
-          curl -f -X POST \
+          URL="${RENDER_APP_URL%/}"
+          echo "Đang gọi API gửi tin nhắn nhắc lịch (force=$FORCE_MODE)..."
+          RESPONSE=$(curl -f -s -S -X POST \
             -H "Content-Type: application/json" \
-            -H "x-cron-token: ${{ secrets.CRON_TOKEN }}" \
-            "${{ secrets.RENDER_APP_URL }}/api/chat/trigger-reminders"
+            -H "x-cron-token: $CRON_TOKEN" \
+            --max-time 60 \
+            "$URL/api/chat/trigger-reminders?force=$FORCE_MODE")
+          echo "Kết quả từ Server: $RESPONSE"
