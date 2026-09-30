@@ -1697,7 +1697,8 @@ function bindShellEvents() {
 
   document.querySelector("#change-password-form")?.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const data = Object.fromEntries(new FormData(event.currentTarget));
+    const form = event.currentTarget;
+    const data = Object.fromEntries(new FormData(form));
     if (data.newPassword !== data.confirmPassword) {
       showToast("New passwords do not match!", "error");
       return;
@@ -1706,6 +1707,8 @@ function bindShellEvents() {
       showToast("New password must be at least 6 characters!", "error");
       return;
     }
+    const submitBtn = form.querySelector("button[type='submit']");
+    if (submitBtn) submitBtn.disabled = true;
     try {
       const res = await fetch("/api/auth/change-password", {
         method: "POST",
@@ -1714,10 +1717,12 @@ function bindShellEvents() {
       });
       const result = await res.json();
       if (!res.ok || !result.ok) throw new Error(result.error || "Failed to update password");
-      showToast("Password updated successfully!");
-      event.target.reset();
+      showToast(result.message || "Password updated successfully!", "success");
+      form.reset();
     } catch (err) {
       showToast(err.message, "error");
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
     }
   });
 

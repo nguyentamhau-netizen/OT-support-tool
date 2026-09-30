@@ -8,6 +8,7 @@
     "start": "node server.mjs"
   },
   "dependencies": {
-    "exceljs": "^4.4.0"
+    "exceljs": "^4.4.0",
+    "pg": "^8.23.0"
   }
 }

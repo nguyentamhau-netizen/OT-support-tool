@@ -3,6 +3,8 @@ import { createSign, createHmac, randomBytes, scryptSync, timingSafeEqual } from
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
+import pg from "pg";
+const { Pool } = pg;
 
 loadEnvFile(".env.local");
 
@@ -268,24 +270,108 @@ function parseCSV(csvText) {
   });
 }
 
+// PostgreSQL Cloud Database & Local CSV Dual-Layer
+let dbPool = null;
+
+async function initDatabase() {
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    console.log("[DB] No DATABASE_URL configured. Operating in Standalone Local CSV mode.");
+    return;
+  }
+
+  try {
+    dbPool = new Pool({
+      connectionString: databaseUrl,
+      ssl: { rejectUnauthorized: false }
+    });
+
+    await dbPool.query("SELECT 1;");
+    console.log("[DB] Successfully connected to PostgreSQL (Neon Cloud Database).");
+
+    await dbPool.query(`
+      CREATE TABLE IF NOT EXISTS app_tables (
+        table_name VARCHAR(64) PRIMARY KEY,
+        data_json JSONB NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Auto-seed initial data from local CSV if table not present in DB
+    for (const tableName of Object.keys(tableSchemas)) {
+      const checkRes = await dbPool.query("SELECT 1 FROM app_tables WHERE table_name = $1", [tableName]);
+      if (checkRes.rowCount === 0) {
+        const localRows = await readCSVFromDisk(tableName);
+        if (localRows.length > 0) {
+          await dbPool.query(
+            `INSERT INTO app_tables (table_name, data_json, updated_at) VALUES ($1, $2, NOW())`,
+            [tableName, JSON.stringify(localRows)]
+          );
+          console.log(`[DB-SEED] Seeded PostgreSQL table "${tableName}" with ${localRows.length} rows from CSV.`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[DB-ERROR] Failed to connect/initialize PostgreSQL:", err.message);
+    console.warn("[DB-FALLBACK] Reverting to Local CSV mode.");
+    dbPool = null;
+  }
+}
+
 async function ensureDbDir() {
   if (!existsSync(DB_DIR)) {
     await mkdir(DB_DIR, { recursive: true });
   }
 }
 
-async function writeCSVTable(tableName, rows) {
-  await ensureDbDir();
-  const headers = tableSchemas[tableName];
-  const csvText = serializeCSV(headers, rows);
-  await writeFile(join(DB_DIR, `${tableName}.csv`), csvText, "utf8");
+async function writeCSVToDisk(tableName, rows) {
+  try {
+    await ensureDbDir();
+    const headers = tableSchemas[tableName];
+    if (!headers) return;
+    const csvText = serializeCSV(headers, rows);
+    await writeFile(join(DB_DIR, `${tableName}.csv`), csvText, "utf8");
+  } catch (err) {
+    console.error(`[DISK-WRITE-ERROR] Failed to write ${tableName}.csv:`, err.message);
+  }
 }
 
-async function readCSVTable(tableName) {
+async function readCSVFromDisk(tableName) {
   const filePath = join(DB_DIR, `${tableName}.csv`);
   if (!existsSync(filePath)) return [];
   const csvText = await readFile(filePath, "utf8");
   return parseCSV(csvText);
+}
+
+async function writeCSVTable(tableName, rows) {
+  if (dbPool) {
+    try {
+      await dbPool.query(
+        `INSERT INTO app_tables (table_name, data_json, updated_at) 
+         VALUES ($1, $2, NOW()) 
+         ON CONFLICT (table_name) 
+         DO UPDATE SET data_json = EXCLUDED.data_json, updated_at = NOW()`,
+        [tableName, JSON.stringify(rows)]
+      );
+    } catch (err) {
+      console.error(`[DB-ERROR] Error writing table "${tableName}" to PostgreSQL:`, err.message);
+    }
+  }
+  await writeCSVToDisk(tableName, rows);
+}
+
+async function readCSVTable(tableName) {
+  if (dbPool) {
+    try {
+      const res = await dbPool.query("SELECT data_json FROM app_tables WHERE table_name = $1", [tableName]);
+      if (res.rows.length > 0 && Array.isArray(res.rows[0].data_json)) {
+        return res.rows[0].data_json;
+      }
+    } catch (err) {
+      console.error(`[DB-ERROR] Error reading table "${tableName}" from PostgreSQL:`, err.message);
+    }
+  }
+  return await readCSVFromDisk(tableName);
 }
 
 // Google Chat Alert Helpers
@@ -544,20 +630,25 @@ async function sendWeekendReminders(saturdayStr, sundayStr, force = false) {
   return { ok: success, satCount: satSlots.length, sunCount: sunSlots.length };
 }
 
-async function checkAndSendReminders(now, force = false) {
+async function checkAndSendReminders(now, force = false, targetWeekend = false) {
   const dayOfWeek = now.getDay(); // 0 is Sunday, 5 is Friday, 6 is Saturday
   
-  if (dayOfWeek === 5) {
-    // It's Friday. Check Saturday (tomorrow) and Sunday (day after tomorrow)
+  if (dayOfWeek === 5 || targetWeekend || force) {
+    // If Friday, or target=weekend, or force testing: check Saturday and Sunday
     const satDate = new Date(now);
-    satDate.setDate(now.getDate() + 1);
-    const sunDate = new Date(now);
-    sunDate.setDate(now.getDate() + 2);
+    if (dayOfWeek === 5) {
+      satDate.setDate(now.getDate() + 1);
+    } else {
+      const diffToSat = (6 - dayOfWeek + 7) % 7;
+      satDate.setDate(now.getDate() + (diffToSat === 0 && dayOfWeek !== 6 ? 7 : diffToSat));
+    }
+    const sunDate = new Date(satDate);
+    sunDate.setDate(satDate.getDate() + 1);
 
     const satStr = dateKeyString(satDate);
     const sunStr = dateKeyString(sunDate);
 
-    console.log(`[BACKGROUND-JOB] Friday weekend check: Saturday (${satStr}) and Sunday (${sunStr}) (force=${force})`);
+    console.log(`[BACKGROUND-JOB] Weekend reminder check: Saturday (${satStr}) and Sunday (${sunStr}) (force=${force}, targetWeekend=${targetWeekend})`);
     return await sendWeekendReminders(satStr, sunStr, force);
   } else {
     // Normal weekday or weekend check. Check tomorrow.
@@ -2086,10 +2177,11 @@ async function handleApi(req, res, url) {
       }
       const isManualAdmin = !hasValidToken && session?.role === "ADMIN";
       const isForce = url.searchParams.get("force") === "true" || isManualAdmin;
+      const isWeekendTarget = url.searchParams.get("target") === "weekend";
 
       const now = getVietnamNow();
       lastDailyReminderDay = dateKeyString(now);
-      const resData = await checkAndSendReminders(now, isForce);
+      const resData = await checkAndSendReminders(now, isForce, isWeekendTarget);
       sendJson(res, 200, { ok: true, ...resData });
       return;
     }
@@ -2378,7 +2470,7 @@ createServer(async (req, res) => {
   }
 }).listen(port, async () => {
   console.log(`OT Support Tool local app: http://localhost:${port}`);
-  console.log(`Standalone local database online.`);
+  await initDatabase();
 
   // Security warning
   if (JWT_SECRET === "supersecretjwtkeyforotsupporttool2026") {

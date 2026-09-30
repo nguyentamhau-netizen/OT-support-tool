@@ -44,5 +44,5 @@ jobs:
             -H "Content-Type: application/json" \
             -H "x-cron-token: $CRON_TOKEN" \
             --max-time 60 \
-            "$URL/api/chat/trigger-reminders?force=$FORCE_MODE")
+            "$URL/api/chat/trigger-reminders?force=$FORCE_MODE&target=weekend")
           echo "Kết quả từ Server: $RESPONSE"
