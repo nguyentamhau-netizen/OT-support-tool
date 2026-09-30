@@ -1691,22 +1691,6 @@ async function handleApi(req, res, url) {
       // Save State
       await saveLocalState(localState);
 
-      // Background sync to Taiga if connected
-      if (projectId && slot.taigaIssueId) {
-        try {
-          const memberships = await taigaFetch(`/memberships?project=${projectId}`);
-          const taigaUser = memberships.find(m => (m.user_email || m.email || "").toLowerCase() === userEmail.toLowerCase());
-          if (taigaUser && taigaUser.user) {
-            await taigaFetch(`/issues/${slot.taigaIssueId}`, {
-              method: "PATCH",
-              body: JSON.stringify({ assigned_to: taigaUser.user })
-            });
-          }
-        } catch (taigaErr) {
-          console.warn("[TAIGA-SYNC] Background Taiga issue assign warning:", taigaErr.message);
-        }
-      }
-
       // SSE broadcast + Chat notification for registration
       const displayName = user.displayName || userEmail;
       const dateDisplay = formatDisplayDate(slot.date);
@@ -1769,18 +1753,6 @@ async function handleApi(req, res, url) {
       localState.auditLogs.push(auditLog);
 
       await saveLocalState(localState);
-
-      // Background sync to Taiga if connected
-      if (projectId && slot?.taigaIssueId) {
-        try {
-          await taigaFetch(`/issues/${slot.taigaIssueId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ assigned_to: null })
-          });
-        } catch (taigaErr) {
-          console.warn("[TAIGA-SYNC] Background Taiga issue unassign warning:", taigaErr.message);
-        }
-      }
 
       // SSE broadcast + Chat notification for cancellation
       const cancelUser = localState.users.find(u => u.email.toLowerCase() === registration.userEmail.toLowerCase());
@@ -2187,16 +2159,7 @@ async function handleApi(req, res, url) {
     }
 
     if (req.method === "POST" && url.pathname === "/api/admin/taiga-sync") {
-      if (!session || session.role !== "ADMIN") {
-        return sendJson(res, 401, { ok: false, error: "Unauthorized. Admin only." });
-      }
-      try {
-        const result = await syncFromTaiga();
-        sendJson(res, 200, { ok: true, ...result, state: await loadLocalState() });
-      } catch (err) {
-        sendJson(res, 500, { ok: false, error: err.message });
-      }
-      return;
+      return sendJson(res, 200, { ok: true, message: "Hệ thống đang hoạt động ở chế độ Độc lập (Standalone Mode)." });
     }
 
     // ========== Phase 4: New API Endpoints ==========
@@ -2478,17 +2441,5 @@ createServer(async (req, res) => {
   }
 
   await ensureDefaultPasswords();
-
-  if (process.env.TAIGA_ADMIN_TOKEN || (process.env.TAIGA_USERNAME && process.env.TAIGA_PASSWORD)) {
-    try {
-      console.log("[TAIGA-SYNC] Syncing existing registered data from Taiga...");
-      await initTaigaConfig();
-      if (projectId) {
-        await syncFromTaiga();
-        console.log("[TAIGA-SYNC] Taiga data sync completed successfully.");
-      }
-    } catch (err) {
-      console.error("[TAIGA-SYNC] Taiga sync on startup failed:", err.message);
-    }
-  }
+  console.log(`[STANDALONE] System running 100% in Standalone Mode (Neon Database).`);
 });

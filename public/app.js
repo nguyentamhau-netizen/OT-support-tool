@@ -1405,7 +1405,6 @@ function renderAdminSchedule() {
             <button class="btn primary small" type="submit">Save Settings</button>
             <button class="btn small" type="button" data-action="test-chat">Send Test Message</button>
             <button class="btn small" type="button" data-action="trigger-reminders">Send Tomorrow's Reminders</button>
-            <button class="btn small" type="button" data-action="sync-taiga" title="Sync and backup all shift schedules and registrations from Taiga into the system">🔄 Sync/Backup from Taiga</button>
           </div>
         </form>
         <div class="notice" style="margin-top: 14px; margin-bottom: 0;">
@@ -1818,32 +1817,6 @@ function bindShellEvents() {
       showToast("Error: " + err.message, "error");
     } finally {
       btn.disabled = false;
-    }
-  });
-
-  document.querySelector("[data-action='sync-taiga']")?.addEventListener("click", async () => {
-    if (!confirm("Do you want to sync and backup all schedule slots and registrations from Taiga into the system?")) return;
-    const btn = document.querySelector("[data-action='sync-taiga']");
-    if (btn) btn.disabled = true;
-    showToast("Syncing data from Taiga...", "info");
-    try {
-      const response = await fetch("/api/admin/taiga-sync", { method: "POST" });
-      const data = await response.json();
-      if (response.ok && data.ok) {
-        showToast(`Sync completed successfully! (${data.registrationsCount || 0} registrations)`, "success");
-        if (data.state) {
-          state = { ...emptyState(), ...data.state };
-          render();
-        } else {
-          await loadStateFromDb(false, selectedMonth);
-        }
-      } else {
-        showToast(`Sync failed: ${data.error || "Taiga connection error"}`, "error");
-      }
-    } catch (err) {
-      showToast("Error: " + err.message, "error");
-    } finally {
-      if (btn) btn.disabled = false;
     }
   });
 
